@@ -269,6 +269,25 @@
   @keyframes shimmer {
     0%{background-position:100% 0} 100%{background-position:-100% 0}
   }
+  .progress-detail {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: var(--text);
+    line-height: 1.55;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .progress-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .btn-stop {
+    background: linear-gradient(135deg, var(--warn), #b83820);
+    color: #fff; padding: 10px 18px; font-size: 0.85rem;
+  }
+  .btn-stop:hover { opacity: 0.9; }
   .log-box {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -277,7 +296,7 @@
     font-family: var(--font-mono);
     font-size: 0.72rem;
     color: var(--muted);
-    max-height: 140px;
+    max-height: 220px;
     overflow-y: auto;
     line-height: 1.6;
   }
@@ -464,9 +483,9 @@
           <input type="number" id="max-pages" value="5" min="1" max="50" />
         </div>
         <label class="toggle">
-          <input type="checkbox" id="use-selenium" checked />
+          <input type="checkbox" id="use-playwright" checked />
           <span class="toggle-track"></span>
-          Use Selenium (JS rendering)
+          Use Playwright (Chromium, JS rendering)
         </label>
         <button class="btn btn-accent2" id="btn-scrape" onclick="doScrape()" style="margin-left:auto;" disabled>
           ▶ Run Scrape
@@ -479,7 +498,12 @@
   <div class="section hidden" id="section-progress">
     <div class="section-title">03 — Scraping</div>
     <div class="card">
-      <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar" style="width:30%"></div></div>
+      <div class="progress-actions">
+        <button type="button" class="btn btn-stop hidden" id="btn-stop" onclick="stopScrape()">■ Stop scrape</button>
+        <span style="font-size:0.72rem;color:var(--muted);" id="progress-hint">Stop takes effect after the current page load / comment batch.</span>
+      </div>
+      <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar" style="width:8%"></div></div>
+      <div class="progress-detail" id="progress-detail">Starting…</div>
       <div class="log-box" id="log-box"></div>
     </div>
   </div>
@@ -644,15 +668,67 @@ function clearSelection() {
 
 // ── Scrape ─────────────────────────────────────────────────────────────────────
 let pollInterval = null;
+let currentJobId = null;
+let lastProgressLog = '';
+
+function formatProgress(p) {
+  if (!p) return '—';
+  const lines = [
+    `Phase: ${p.phase || '—'}`,
+    p.message ? `Status: ${p.message}` : '',
+    `Listing: page ${p.page_index ?? 0}/${p.max_pages ?? '?'} · Thread links found so far: ${p.threads_discovered ?? 0}`,
+    `Threads: ${p.thread_index ?? 0}/${p.threads_total ?? '?'} · Comments read: ${p.comments_scanned ?? 0} · Flagged (keyword hits): ${p.flagged_count ?? 0}`,
+  ];
+  if (p.current_thread) lines.push(`Current thread: ${p.current_thread}`);
+  return lines.filter(Boolean).join('\n');
+}
+
+function updateProgressBar(p) {
+  const bar = document.getElementById('progress-bar');
+  if (!p || p.phase === 'starting') { bar.style.width = '8%'; return; }
+  if (p.phase === 'listing_pages') {
+    const m = p.max_pages || 1;
+    const frac = Math.min(1, (p.page_index || 0) / m);
+    bar.style.width = (8 + frac * 32) + '%';
+    return;
+  }
+  if (p.phase === 'scraping_threads' && (p.threads_total > 0)) {
+    const frac = Math.min(1, (p.thread_index || 0) / p.threads_total);
+    bar.style.width = (40 + frac * 52) + '%';
+    return;
+  }
+  bar.style.width = '92%';
+}
+
+function clearScrapePoll() {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+}
+
+async function stopScrape() {
+  if (!currentJobId) return;
+  try {
+    const r = await fetch(`${API}/api/scrape/stop/${currentJobId}`, { method: 'POST' });
+    if (!r.ok) throw new Error(await r.text());
+    addLog('warn', 'Stop requested — finishing current step…');
+  } catch (e) {
+    addLog('error', `Stop failed: ${e.message}`);
+  }
+}
 
 async function doScrape() {
   if (!selectedGame) return;
   document.getElementById('section-progress').classList.remove('hidden');
   document.getElementById('section-results').classList.add('hidden');
   document.getElementById('btn-scrape').disabled = true;
+  document.getElementById('btn-stop').classList.remove('hidden');
+  clearScrapePoll();
+  currentJobId = null;
+  lastProgressLog = '';
 
   const log = document.getElementById('log-box');
   log.innerHTML = '';
+  document.getElementById('progress-detail').textContent = 'Submitting job…';
+  document.getElementById('progress-bar').style.width = '5%';
   addLog('info', `Starting scrape: ${selectedGame.name} (App ${selectedGame.app_id})`);
   addLog('info', `Keywords: ${keywords.join(', ')}`);
 
@@ -661,11 +737,10 @@ async function doScrape() {
     game_name: selectedGame.name,
     keywords,
     max_pages: parseInt(document.getElementById('max-pages').value),
-    use_selenium: document.getElementById('use-selenium').checked,
+    use_playwright: document.getElementById('use-playwright').checked,
   };
 
   try {
-    // Start background job
     addLog('info', 'Submitting job to backend…');
     const startR = await fetch(`${API}/api/scrape/start`, {
       method: 'POST',
@@ -674,46 +749,51 @@ async function doScrape() {
     });
     if (!startR.ok) throw new Error(await startR.text());
     const { job_id } = await startR.json();
-    addLog('success', `Job started (ID: ${job_id}). Polling for results…`);
+    currentJobId = job_id;
+    addLog('success', `Job ${job_id} started — live progress below.`);
 
-    // Animated progress
-    const bar = document.getElementById('progress-bar');
-    let pct = 30;
-    const ticker = setInterval(() => {
-      pct = Math.min(pct + Math.random() * 4, 92);
-      bar.style.width = pct + '%';
-    }, 1200);
-
-    // Poll
     pollInterval = setInterval(async () => {
       try {
         const pollR = await fetch(`${API}/api/scrape/status/${job_id}`);
         const job = await pollR.json();
+        const p = job.progress || {};
+        document.getElementById('progress-detail').textContent = formatProgress(p);
+        updateProgressBar(p);
 
-        if (job.status === 'done') {
-          clearInterval(pollInterval);
-          clearInterval(ticker);
-          bar.style.width = '100%';
-          addLog('success', 'Scrape complete!');
+        const sig = `${p.phase}|${p.message}|${p.comments_scanned}|${p.thread_index}`;
+        if (sig !== lastProgressLog && p.message) {
+          lastProgressLog = sig;
+          addLog('info', p.message);
+        }
+
+        if (job.status === 'done' || job.status === 'stopped') {
+          clearScrapePoll();
+          currentJobId = null;
+          document.getElementById('btn-stop').classList.add('hidden');
+          document.getElementById('progress-bar').style.width = '100%';
+          addLog(job.status === 'stopped' ? 'warn' : 'success',
+            job.status === 'stopped' ? 'Stopped — showing partial results.' : 'Scrape complete!');
           scrapeResult = job.result;
           renderResults(job.result);
           document.getElementById('btn-scrape').disabled = false;
         } else if (job.status === 'error') {
-          clearInterval(pollInterval);
-          clearInterval(ticker);
+          clearScrapePoll();
+          currentJobId = null;
+          document.getElementById('btn-stop').classList.add('hidden');
           addLog('error', `Job failed: ${job.error}`);
           document.getElementById('btn-scrape').disabled = false;
-        } else {
-          addLog('info', 'Still running…');
         }
       } catch(e) {
         addLog('error', `Poll error: ${e.message}`);
       }
-    }, 3000);
+    }, 750);
 
   } catch(e) {
     addLog('error', `Failed: ${e.message}`);
     document.getElementById('btn-scrape').disabled = false;
+    document.getElementById('btn-stop').classList.add('hidden');
+    clearScrapePoll();
+    currentJobId = null;
   }
 }
 

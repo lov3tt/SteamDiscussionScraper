@@ -5,7 +5,6 @@
 from fastapi import APIRouter, Query, HTTPException
 from app.services.steam_api import search_games, get_app_details
 from app.models.schemas import SearchResponse, GameResult
-from typing import Optional
 
 router = APIRouter()
 

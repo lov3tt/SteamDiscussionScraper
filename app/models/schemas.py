@@ -2,7 +2,7 @@
 Pydantic models for request/response schemas.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from typing import List, Optional
 
 
@@ -37,9 +37,32 @@ class ScrapeRequest(BaseModel):
         ]
     )
     max_pages: int = Field(default=5, ge=1, le=50)
-    use_selenium: bool = Field(
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def clean_keywords(cls, v):
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return v
+        out: List[str] = []
+        seen: set = set()
+        for x in v:
+            if x is None:
+                continue
+            s = str(x).strip()
+            if not s:
+                continue
+            key = s.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
+    use_playwright: bool = Field(
         default=True,
-        description="Use Selenium for JS-rendered pages. Falls back to requests if False.",
+        validation_alias=AliasChoices("use_playwright", "use_selenium"),
+        description="Use Playwright (Chromium) for JS-rendered Steam pages. Falls back to httpx if false.",
     )
 
 

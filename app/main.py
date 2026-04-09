@@ -2,11 +2,11 @@
 Steam Discussion Board NLP Scraper — FastAPI Backend
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.routers import search, scrape
 
@@ -27,14 +27,18 @@ app.add_middleware(
 app.include_router(search.router, prefix="/api/search", tags=["Game Search"])
 app.include_router(scrape.router, prefix="/api/scrape", tags=["Discussion Scraper"])
 
-# Serve the frontend
-frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
-if os.path.isdir(frontend_path):
-    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_index_html = os.path.join(_project_root, "index.html")
 
-    @app.get("/", include_in_schema=False)
-    async def serve_frontend():
-        return FileResponse(os.path.join(frontend_path, "index.html"))
+
+@app.get("/", include_in_schema=False)
+async def serve_frontend():
+    if not os.path.isfile(_index_html):
+        return PlainTextResponse(
+            "Frontend not found. Expected index.html next to the app package.",
+            status_code=404,
+        )
+    return FileResponse(_index_html)
 
 
 @app.get("/api/health")

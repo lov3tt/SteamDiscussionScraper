@@ -6,7 +6,6 @@ the Steam App Details API for enriched metadata.
 """
 
 import httpx
-import asyncio
 from typing import List, Optional
 from app.models.schemas import GameResult
 

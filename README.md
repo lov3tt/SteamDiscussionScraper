@@ -17,9 +17,8 @@ steam_nlp_scraper/
 │   │   └── scrape.py             # POST /api/scrape/ — Discussion board ETL
 │   └── services/
 │       ├── steam_api.py          # Steam Store API (search + app details)
-│       └── scraper.py            # ETL pipeline: Selenium → BS4 → NLP
-├── frontend/
-│   └── index.html                # Dark-themed SPA dashboard (no build step)
+│       └── scraper.py            # ETL pipeline: Playwright → BS4 → NLP
+├── index.html                    # Dark-themed UI (no build step)
 ├── run.py                        # Uvicorn entrypoint
 └── requirements.txt
 ```
@@ -32,7 +31,7 @@ steam_nlp_scraper/
 [ Steam Store API ]
        │ game search / appID lookup
        ▼
-[ Selenium (headless Chrome) ]
+[ Playwright (headless Chromium) ]
        │ loads JS-rendered discussion list pages
        │ page-by-page pagination up to max_pages
        ▼
@@ -61,23 +60,15 @@ steam_nlp_scraper/
 pip install -r requirements.txt
 ```
 
-### 2. Install ChromeDriver
+### 2. Install Playwright browsers (Chromium)
 
-Selenium requires ChromeDriver that matches your installed Chrome version.
+Use the **same Python** you will use to run the app (if you use a venv, activate it first):
 
-**macOS (Homebrew):**
 ```bash
-brew install chromedriver
+python -m playwright install chromium
 ```
 
-**Linux:**
-```bash
-sudo apt install chromium-driver
-# or download from https://chromedriver.chromium.org/downloads
-```
-
-**Windows:**
-Download from https://chromedriver.chromium.org/downloads and add to PATH.
+(`playwright install chromium` alone can target a different Python than your venv and cause launch failures.)
 
 ### 3. Download NLTK VADER lexicon (auto-download on first run, or manual)
 
@@ -91,9 +82,9 @@ import nltk; nltk.download('vader_lexicon')
 
 ```bash
 python run.py
-# or
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+`run.py` disables uvicorn **reload** by default; on Windows, `--reload` often breaks Playwright because the reloader runs the app in a subprocess. For dev auto-reload: `set UVICORN_RELOAD=1` then `python run.py`, or run `uvicorn app.main:app --reload --host 127.0.0.1 --port 8000` and expect Playwright issues on some setups.
 
 Then open: **http://localhost:8000**
 
@@ -126,9 +117,11 @@ The FastAPI Swagger docs are at: **http://localhost:8000/docs**
   "game_name": "Counter-Strike 2",
   "keywords": ["cheating", "ban", "unfair", "hack", "scam"],
   "max_pages": 5,
-  "use_selenium": true
+  "use_playwright": true
 }
 ```
+
+Legacy requests may still send `"use_selenium": true` or `false`; it is accepted as an alias for `use_playwright`.
 
 ### Scrape Response
 
@@ -168,7 +161,7 @@ The FastAPI Swagger docs are at: **http://localhost:8000/docs**
 - 🔍 **Game Search** — type any game name, get cards with images, prices, app IDs
 - ✅ **Select Game** — click a card to target it for scraping
 - 🏷️ **Keyword Manager** — add/remove keywords before scraping
-- ⚙️ **Config** — set max pages, toggle Selenium on/off
+- ⚙️ **Config** — set max pages, toggle Playwright on/off
 - 📊 **Live Progress** — log stream + animated progress bar
 - 📈 **Keyword Frequency Chart** — visual bar chart of matched keyword counts
 - 💬 **Flagged Comment Cards** — highlighted keywords, sentiment badges, thread links
@@ -179,6 +172,6 @@ The FastAPI Swagger docs are at: **http://localhost:8000/docs**
 ## Notes
 
 - **Steam rate limits**: Steam may throttle requests. Add delays between pages in `scraper.py` (`pause=` param) if you hit 429s.
-- **Selenium fallback**: If `use_selenium=false`, the scraper falls back to `httpx` (requests), which may miss JS-rendered content.
+- **HTTP fallback**: If `use_playwright=false` or Playwright fails to start, the scraper uses `httpx` only, which may miss JS-rendered content.
 - **Production**: Swap the in-memory `_jobs` dict in `scrape.py` for Redis + Celery for concurrent job management.
-- **Proxy support**: For large-scale scraping, configure an HTTP proxy in `_build_driver()` and `_fetch_html_requests()`.
+- **Proxy support**: For large-scale scraping, configure a proxy on the Playwright browser context or on `httpx.AsyncClient`.

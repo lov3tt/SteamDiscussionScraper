@@ -2,16 +2,24 @@
 """
 Entry point for the Steam NLP Scraper API.
 Run: python run.py
-Or:  uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+Reload is off by default: on Windows, uvicorn's reloader spawns a child process where
+Playwright often fails to launch Chromium (and may surface as an empty exception).
+
+Dev reload: set UVICORN_RELOAD=1 or run:
+  uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 """
+
+import os
 
 import uvicorn
 
 if __name__ == "__main__":
+    _reload = os.environ.get("UVICORN_RELOAD", "").strip().lower() in ("1", "true", "yes")
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=8000,
-        reload=True,
+        reload=_reload,
         log_level="info",
     )
