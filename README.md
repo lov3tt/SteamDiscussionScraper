@@ -116,12 +116,11 @@ The FastAPI Swagger docs are at: **http://localhost:8000/docs**
   "app_id": 730,
   "game_name": "Counter-Strike 2",
   "keywords": ["cheating", "ban", "unfair", "hack", "scam"],
-  "max_pages": 5,
-  "use_playwright": true
+  "max_pages": 5
 }
 ```
 
-Legacy requests may still send `"use_selenium": true` or `false`; it is accepted as an alias for `use_playwright`.
+Scraping always uses **Playwright** when it is installed; extra fields in the JSON body are ignored.
 
 ### Scrape Response
 
@@ -161,7 +160,7 @@ Legacy requests may still send `"use_selenium": true` or `false`; it is accepted
 - 🔍 **Game Search** — type any game name, get cards with images, prices, app IDs
 - ✅ **Select Game** — click a card to target it for scraping
 - 🏷️ **Keyword Manager** — add/remove keywords before scraping
-- ⚙️ **Config** — set max pages, toggle Playwright on/off
+- ⚙️ **Config** — set max pages (Playwright is always used when installed)
 - 📊 **Live Progress** — log stream + animated progress bar
 - 📈 **Keyword Frequency Chart** — visual bar chart of matched keyword counts
 - 💬 **Flagged Comment Cards** — highlighted keywords, sentiment badges, thread links
@@ -172,6 +171,6 @@ Legacy requests may still send `"use_selenium": true` or `false`; it is accepted
 ## Notes
 
 - **Steam rate limits**: Steam may throttle requests. Add delays between pages in `scraper.py` (`pause=` param) if you hit 429s.
-- **HTTP fallback**: If `use_playwright=false` or Playwright fails to start, the scraper uses `httpx` only, which may miss JS-rendered content.
+- **HTTP fallback**: If Playwright is missing or fails to start, the scraper uses `httpx` only, which may miss JS-rendered content.
 - **Production**: Swap the in-memory `_jobs` dict in `scrape.py` for Redis + Celery for concurrent job management.
 - **Proxy support**: For large-scale scraping, configure a proxy on the Playwright browser context or on `httpx.AsyncClient`.

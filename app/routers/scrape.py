@@ -46,7 +46,6 @@ async def scrape_sync(request: ScrapeRequest):
             game_name=request.game_name,
             keywords=request.keywords,
             max_pages=request.max_pages,
-            use_playwright=request.use_playwright,
             job_state=None,
         )
         return result
@@ -80,7 +79,6 @@ async def scrape_async(request: ScrapeRequest, background_tasks: BackgroundTasks
                 game_name=request.game_name,
                 keywords=request.keywords,
                 max_pages=request.max_pages,
-                use_playwright=request.use_playwright,
                 job_state=job_ref,
             )
             job_ref["status"] = "stopped" if cancel_evt.is_set() else "done"

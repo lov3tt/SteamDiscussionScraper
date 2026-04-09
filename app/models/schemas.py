@@ -2,7 +2,7 @@
 Pydantic models for request/response schemas.
 """
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional
 
 
@@ -27,6 +27,8 @@ class SearchResponse(BaseModel):
 # ── Scraper ──────────────────────────────────────────────────────────────────
 
 class ScrapeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     app_id: int
     game_name: str
     keywords: List[str] = Field(
@@ -59,11 +61,6 @@ class ScrapeRequest(BaseModel):
             seen.add(key)
             out.append(s)
         return out
-    use_playwright: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("use_playwright", "use_selenium"),
-        description="Use Playwright (Chromium) for JS-rendered Steam pages. Falls back to httpx if false.",
-    )
 
 
 class FlaggedComment(BaseModel):

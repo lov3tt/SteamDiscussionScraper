@@ -527,11 +527,11 @@ async def run_scrape_pipeline(
     game_name: str,
     keywords: List[str],
     max_pages: int,
-    use_playwright: bool,
     job_state: Optional[Dict[str, Any]] = None,
 ) -> ScrapeResult:
     """
-    Load discussion pages with Playwright when enabled and available; otherwise httpx only.
+    Always uses Playwright when installed; otherwise httpx only.
+    On Playwright launch/runtime errors, falls back to httpx and records errors.
     Optional job_state: { "progress": dict, "cancel": asyncio.Event } for UI progress / stop.
     """
     errors: List[str] = []
@@ -544,9 +544,8 @@ async def run_scrape_pipeline(
     ) -> str:
         return await _fetch_html_http(url)
 
-    if not use_playwright or not PLAYWRIGHT_AVAILABLE:
-        if use_playwright and not PLAYWRIGHT_AVAILABLE:
-            errors.append("Playwright is not installed; using HTTP-only fetching.")
+    if not PLAYWRIGHT_AVAILABLE:
+        errors.append("Playwright is not installed; using HTTP-only fetching.")
         return await _run_with_fetch(
             app_id, game_name, keywords, max_pages, fetch_http, errors, job_state
         )

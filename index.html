@@ -105,9 +105,15 @@
   }
 
   /* ── Search Row ── */
-  .search-row { display: flex; gap: 10px; }
-  .search-row input {
+  .search-row { display: flex; gap: 10px; align-items: flex-start; }
+  .search-wrap {
     flex: 1;
+    min-width: 0;
+    position: relative;
+  }
+  .search-row input#game-query {
+    width: 100%;
+    box-sizing: border-box;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -118,8 +124,69 @@
     outline: none;
     transition: border-color .2s;
   }
-  .search-row input:focus { border-color: var(--accent); }
-  .search-row input::placeholder { color: var(--muted); }
+  .search-row input#game-query:focus { border-color: var(--accent); }
+  .search-row input#game-query::placeholder { color: var(--muted); }
+
+  .search-suggest {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 50;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .search-suggest-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background .12s;
+  }
+  .search-suggest-item:last-child { border-bottom: none; }
+  .search-suggest-item:hover,
+  .search-suggest-item.active {
+    background: var(--surface2);
+  }
+  .search-suggest-item.active {
+    border-left: 3px solid var(--accent);
+    padding-left: 11px;
+  }
+  .search-suggest-item img {
+    width: 64px;
+    height: 30px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+  .search-suggest-meta { min-width: 0; flex: 1; }
+  .search-suggest-name {
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .search-suggest-sub {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .search-suggest-hint {
+    padding: 10px 14px;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .search-suggest-hint.error { color: var(--warn); }
 
   /* ── Buttons ── */
   .btn {
@@ -437,7 +504,7 @@
   <header>
     <div class="logo">🔍</div>
     <div>
-      <h1>Steam NLP Scraper</h1>
+      <h1>Steam Discussion Scraper</h1>
       <p>Discussion board keyword analysis &amp; sentiment engine</p>
     </div>
     <div class="badge" id="api-status">⬤ CONNECTING</div>
@@ -448,7 +515,10 @@
     <div class="section-title">01 — Find a Game</div>
     <div class="card">
       <div class="search-row">
-        <input type="text" id="game-query" placeholder="Search Steam Store… e.g. Counter-Strike, Rust, Dota 2" />
+        <div class="search-wrap">
+          <input type="text" id="game-query" placeholder="Type a game name — suggestions appear automatically" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-suggest" />
+          <div id="search-suggest" class="search-suggest hidden" role="listbox" hidden></div>
+        </div>
         <button class="btn btn-primary" id="btn-search" onclick="doSearch()">Search</button>
       </div>
       <div id="games-grid" class="games-grid"></div>
@@ -479,14 +549,10 @@
 
       <div class="config-row">
         <div>
-          <label>Max Pages to Scrape</label>
+          <label>Max Pages to Scrape: Note 15 Threads per Page ~ 4 Minutes per page</label>
           <input type="number" id="max-pages" value="5" min="1" max="50" />
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="use-playwright" checked />
-          <span class="toggle-track"></span>
-          Use Playwright (Chromium, JS rendering)
-        </label>
+
         <button class="btn btn-accent2" id="btn-scrape" onclick="doScrape()" style="margin-left:auto;" disabled>
           ▶ Run Scrape
         </button>
@@ -544,7 +610,7 @@ const API = ''; // set to '' for same-origin or 'http://localhost:8000' when run
 let selectedGame = null;
 let keywords = [
   'cheating','cheat','scam','ban','banned','moderator','unfair',
-  'hack','exploit','toxic','report','abuse','grief','harassment'
+  'hack','exploit','grief','bugs','refund','broken','glitch','toxic',
 ];
 let scrapeResult = null;
 let sentimentFilter = 'all';
@@ -583,10 +649,142 @@ function addKw() {
 function removeKw(k) { keywords = keywords.filter(x => x !== k); renderKw(); }
 function kwEnter(e) { if (e.key === 'Enter') addKw(); }
 
-// ── Game Search ───────────────────────────────────────────────────────────────
+// ── Game Search & autocomplete ────────────────────────────────────────────────
+let suggestAbort = null;
+let suggestTimer = null;
+let suggestIndex = -1;
+let lastSuggestGames = [];
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+function safeHttpUrl(u) {
+  if (!u || typeof u !== 'string') return '';
+  const t = u.trim();
+  if (t.startsWith('https://') || t.startsWith('http://')) return escHtml(t);
+  return '';
+}
+
+function setSuggestOpen(open) {
+  const box = document.getElementById('search-suggest');
+  const inp = document.getElementById('game-query');
+  if (open) {
+    box.classList.remove('hidden');
+    box.hidden = false;
+    inp.setAttribute('aria-expanded', 'true');
+  } else {
+    box.classList.add('hidden');
+    box.hidden = true;
+    inp.setAttribute('aria-expanded', 'false');
+    suggestIndex = -1;
+  }
+}
+
+function hideSuggest() {
+  setSuggestOpen(false);
+}
+
+/** Prefer exact name, then prefix, then substring (Steam order as tie-breaker). */
+function rankSuggestions(query, games) {
+  const q = query.trim().toLowerCase();
+  if (!q) return games.slice();
+  return games.map((g, i) => {
+    const n = (g.name || '').toLowerCase();
+    let tier = 4;
+    let pos = 999;
+    if (n === q) { tier = 0; pos = 0; }
+    else if (n.startsWith(q)) { tier = 1; pos = n.length; }
+    else {
+      const ix = n.indexOf(q);
+      if (ix >= 0) { tier = 2; pos = ix; }
+    }
+    return { g, tier, pos, i };
+  }).sort((a, b) => a.tier - b.tier || a.pos - b.pos || a.i - b.i).map(x => x.g);
+}
+
+function renderSuggestLoading() {
+  const box = document.getElementById('search-suggest');
+  box.innerHTML = '<div class="search-suggest-hint"><span class="spinner"></span> Fetching matches…</div>';
+  setSuggestOpen(true);
+}
+
+function renderSuggestError(msg) {
+  const box = document.getElementById('search-suggest');
+  box.innerHTML = `<div class="search-suggest-hint error">${escHtml(msg)}</div>`;
+  setSuggestOpen(true);
+}
+
+function renderSuggestList(games) {
+  const box = document.getElementById('search-suggest');
+  if (!games.length) {
+    box.innerHTML = '<div class="search-suggest-hint">No games found. Try another spelling.</div>';
+    setSuggestOpen(true);
+    return;
+  }
+  box.innerHTML = games.map((g, idx) => `
+    <div class="search-suggest-item${idx === suggestIndex ? ' active' : ''}" role="option" data-idx="${idx}" aria-selected="${idx === suggestIndex}">
+      <img src="${safeHttpUrl(g.header_image)}" alt="" onerror="this.style.visibility='hidden'" />
+      <div class="search-suggest-meta">
+        <div class="search-suggest-name">${escHtml(g.name)}</div>
+        <div class="search-suggest-sub">${escHtml(g.price || 'Free')} · App ${g.app_id}</div>
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('.search-suggest-item').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const i = parseInt(el.getAttribute('data-idx'), 10);
+      if (!Number.isNaN(i)) pickSuggestion(lastSuggestGames[i]);
+    });
+  });
+  setSuggestOpen(true);
+}
+
+function pickSuggestion(g) {
+  if (!g) return;
+  document.getElementById('game-query').value = g.name;
+  hideSuggest();
+  renderGames(lastSuggestGames.length ? lastSuggestGames : [g]);
+  selectGame(g);
+}
+
+async function fetchSuggestions(q) {
+  if (suggestAbort) suggestAbort.abort();
+  suggestAbort = new AbortController();
+  const query = q.trim();
+  if (query.length < 2) {
+    hideSuggest();
+    return;
+  }
+  renderSuggestLoading();
+  try {
+    const r = await fetch(
+      `${API}/api/search/?q=${encodeURIComponent(query)}&max_results=10`,
+      { signal: suggestAbort.signal }
+    );
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    lastSuggestGames = rankSuggestions(query, data.results || []);
+    suggestIndex = -1;
+    renderSuggestList(lastSuggestGames);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    renderSuggestError(e.message || 'Search failed');
+  }
+}
+
+function scheduleSuggest() {
+  if (suggestTimer) clearTimeout(suggestTimer);
+  const q = document.getElementById('game-query').value;
+  suggestTimer = setTimeout(() => fetchSuggestions(q), 300);
+}
+
 async function doSearch() {
   const q = document.getElementById('game-query').value.trim();
   if (!q) return;
+  hideSuggest();
   const btn = document.getElementById('btn-search');
   btn.disabled = true; btn.textContent = 'Searching…';
   document.getElementById('games-grid').innerHTML = '<div class="empty"><span class="spinner"></span>Searching Steam Store…</div>';
@@ -595,7 +793,8 @@ async function doSearch() {
     const r = await fetch(`${API}/api/search/?q=${encodeURIComponent(q)}&max_results=12`);
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
-    renderGames(data.results);
+    lastSuggestGames = rankSuggestions(q, data.results || []);
+    renderGames(lastSuggestGames);
   } catch(e) {
     document.getElementById('games-grid').innerHTML = `<div class="empty" style="color:var(--warn)">Error: ${e.message}</div>`;
   } finally {
@@ -737,7 +936,6 @@ async function doScrape() {
     game_name: selectedGame.name,
     keywords,
     max_pages: parseInt(document.getElementById('max-pages').value),
-    use_playwright: document.getElementById('use-playwright').checked,
   };
 
   try {
@@ -896,8 +1094,41 @@ function highlightKeywords(text, kws) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById('game-query').addEventListener('input', () => scheduleSuggest());
 document.getElementById('game-query').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doSearch();
+  const box = document.getElementById('search-suggest');
+  const open = !box.classList.contains('hidden');
+  const n = lastSuggestGames.length;
+  if (e.key === 'ArrowDown' && open && n) {
+    e.preventDefault();
+    suggestIndex = Math.min(suggestIndex + 1, n - 1);
+    renderSuggestList(lastSuggestGames);
+    box.querySelector('.search-suggest-item.active')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (e.key === 'ArrowUp' && open && n) {
+    e.preventDefault();
+    suggestIndex = Math.max(suggestIndex - 1, 0);
+    renderSuggestList(lastSuggestGames);
+    box.querySelector('.search-suggest-item.active')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (e.key === 'Escape') {
+    hideSuggest();
+    return;
+  }
+  if (e.key === 'Enter') {
+    if (open && suggestIndex >= 0 && lastSuggestGames[suggestIndex]) {
+      e.preventDefault();
+      pickSuggestion(lastSuggestGames[suggestIndex]);
+      return;
+    }
+    doSearch();
+  }
+});
+document.addEventListener('click', e => {
+  const wrap = document.querySelector('.search-wrap');
+  if (wrap && !wrap.contains(e.target)) hideSuggest();
 });
 renderKw();
 checkHealth();
