@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Steam NLP Scraper</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;600;700;900&display=swap" rel="stylesheet" />
+<style>
+  /* ── CSS Variables ── */
+  :root {
+    --bg:        #0b0e14;
+    --surface:   #111620;
+    --surface2:  #1a2030;
+    --border:    #1e2d45;
+    --accent:    #00c9ff;
+    --accent2:   #e05aff;
+    --warn:      #ff6b35;
+    --green:     #00e5a0;
+    --text:      #c8d6e5;
+    --muted:     #4a5a72;
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-body: 'Barlow', sans-serif;
+    --radius:    8px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,201,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,201,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Layout ── */
+  .app { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ── Header ── */
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 36px 0 32px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+  .logo {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; flex-shrink: 0;
+  }
+  header h1 {
+    font-weight: 900; font-size: 1.6rem; letter-spacing: -0.5px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  header p { font-size: 0.82rem; color: var(--muted); font-weight: 300; margin-top: 2px; }
+  .badge {
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 20px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 40px; }
+  .section-title {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-title::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+
+  /* ── Search Row ── */
+  .search-row { display: flex; gap: 10px; }
+  .search-row input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    padding: 12px 16px;
+    outline: none;
+    transition: border-color .2s;
+  }
+  .search-row input:focus { border-color: var(--accent); }
+  .search-row input::placeholder { color: var(--muted); }
+
+  /* ── Buttons ── */
+  .btn {
+    border: none; border-radius: var(--radius);
+    cursor: pointer; font-family: var(--font-body);
+    font-weight: 700; letter-spacing: 0.5px;
+    transition: opacity .2s, transform .1s;
+    white-space: nowrap;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent), #0084b4);
+    color: #000; padding: 12px 22px; font-size: 0.9rem;
+  }
+  .btn-accent2 {
+    background: linear-gradient(135deg, var(--accent2), #9a2bd4);
+    color: #fff; padding: 12px 22px; font-size: 0.9rem;
+  }
+  .btn-sm {
+    padding: 6px 14px; font-size: 0.8rem;
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-sm.active, .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Game Results Grid ── */
+  .games-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .game-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .2s, transform .15s;
+    position: relative;
+  }
+  .game-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .game-card.selected { border-color: var(--accent2); box-shadow: 0 0 18px rgba(224,90,255,0.15); }
+  .game-card img {
+    width: 100%; height: 110px; object-fit: cover; display: block;
+    background: var(--border);
+  }
+  .game-card-body { padding: 12px; }
+  .game-card-name { font-weight: 700; font-size: 0.88rem; margin-bottom: 4px; }
+  .game-card-price {
+    font-family: var(--font-mono); font-size: 0.72rem;
+    color: var(--green);
+  }
+  .game-card-id {
+    font-family: var(--font-mono); font-size: 0.65rem;
+    color: var(--muted); margin-top: 4px;
+  }
+  .selected-badge {
+    position: absolute; top: 8px; right: 8px;
+    background: var(--accent2); color: #fff;
+    border-radius: 4px; font-size: 0.65rem; font-weight: 700;
+    padding: 2px 6px; letter-spacing: 0.5px;
+  }
+
+  /* ── Selected Game Banner ── */
+  .selected-game-banner {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px;
+    background: var(--surface2);
+    border: 1px solid var(--accent2);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+  }
+  .selected-game-banner img { width: 60px; height: 34px; object-fit: cover; border-radius: 4px; }
+  .selected-game-banner .name { font-weight: 700; font-size: 0.95rem; }
+  .selected-game-banner .appid { font-family: var(--font-mono); color: var(--muted); font-size: 0.72rem; }
+
+  /* ── Keyword Tags ── */
+  .keyword-area { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .kw-tag {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 10px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--warn);
+    cursor: pointer;
+    transition: border-color .2s;
+  }
+  .kw-tag:hover { border-color: var(--warn); }
+  .kw-tag .remove { color: var(--muted); font-size: 0.8rem; }
+  .kw-add { display: flex; gap: 8px; margin-top: 10px; }
+  .kw-add input {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text);
+    font-family: var(--font-mono); font-size: 0.8rem;
+    padding: 8px 12px; outline: none; transition: border-color .2s; width: 180px;
+  }
+  .kw-add input:focus { border-color: var(--warn); }
+
+  /* ── Config Row ── */
+  .config-row {
+    display: flex; gap: 24px; align-items: flex-end;
+    flex-wrap: wrap; margin-top: 20px;
+  }
+  .config-row label { font-size: 0.75rem; color: var(--muted); display: block; margin-bottom: 6px; }
+  .config-row input[type=number] {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text);
+    font-family: var(--font-mono); font-size: 0.88rem;
+    padding: 8px 12px; width: 90px; outline: none;
+  }
+  .toggle {
+    display: flex; align-items: center; gap: 8px;
+    cursor: pointer; font-size: 0.8rem;
+  }
+  .toggle input { display: none; }
+  .toggle-track {
+    width: 38px; height: 20px;
+    background: var(--border); border-radius: 20px;
+    position: relative; transition: background .2s;
+  }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle-track::after {
+    content: ''; position: absolute;
+    width: 14px; height: 14px;
+    background: #fff; border-radius: 50%;
+    top: 3px; left: 3px; transition: left .2s;
+  }
+  .toggle input:checked + .toggle-track::after { left: 21px; }
+
+  /* ── Progress ── */
+  .progress-bar-wrap {
+    height: 3px; background: var(--border);
+    border-radius: 3px; margin: 16px 0; overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 3px; width: 0%; transition: width .4s;
+    animation: shimmer 1.5s linear infinite;
+    background-size: 200% 100%;
+  }
+  @keyframes shimmer {
+    0%{background-position:100% 0} 100%{background-position:-100% 0}
+  }
+  .log-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    max-height: 140px;
+    overflow-y: auto;
+    line-height: 1.6;
+  }
+  .log-entry { margin-bottom: 2px; }
+  .log-entry.info  { color: var(--accent); }
+  .log-entry.warn  { color: var(--warn); }
+  .log-entry.success { color: var(--green); }
+  .log-entry.error  { color: #ff4d4d; }
+
+  /* ── Results ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px; margin-bottom: 28px;
+  }
+  .stat-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 14px;
+    text-align: center;
+  }
+  .stat-box .val {
+    font-family: var(--font-mono); font-size: 1.8rem;
+    font-weight: 700; line-height: 1;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .stat-box .lbl { font-size: 0.68rem; color: var(--muted); margin-top: 6px; letter-spacing: 1px; }
+
+  /* ── Keyword frequency chart ── */
+  .kw-freq { margin-bottom: 28px; }
+  .kw-bar-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px;
+  }
+  .kw-bar-label {
+    font-family: var(--font-mono); font-size: 0.72rem;
+    color: var(--warn); width: 120px; text-align: right; flex-shrink: 0;
+  }
+  .kw-bar-track {
+    flex: 1; height: 10px; background: var(--border);
+    border-radius: 4px; overflow: hidden;
+  }
+  .kw-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--warn), var(--accent2));
+    border-radius: 4px;
+    transition: width 0.8s cubic-bezier(.22,.68,0,1.2);
+  }
+  .kw-bar-count {
+    font-family: var(--font-mono); font-size: 0.7rem;
+    color: var(--text); width: 28px; text-align: right;
+  }
+
+  /* ── Flagged comments ── */
+  .filter-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+  .filter-row span { font-size: 0.75rem; color: var(--muted); }
+  .comment-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 12px;
+    transition: border-color .2s;
+  }
+  .comment-card:hover { border-color: var(--border); }
+  .comment-header {
+    display: flex; gap: 10px; align-items: flex-start;
+    margin-bottom: 10px; flex-wrap: wrap;
+  }
+  .comment-author {
+    font-weight: 700; font-size: 0.82rem; color: var(--accent);
+  }
+  .comment-thread {
+    font-size: 0.72rem; color: var(--muted);
+    flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .comment-ts { font-family: var(--font-mono); font-size: 0.65rem; color: var(--muted); }
+  .comment-body {
+    font-size: 0.85rem; line-height: 1.6;
+    color: var(--text); margin-bottom: 10px;
+  }
+  .highlight {
+    background: rgba(255,107,53,0.25);
+    color: var(--warn);
+    border-radius: 3px;
+    padding: 1px 3px;
+    font-weight: 700;
+  }
+  .comment-footer { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .kw-chip {
+    padding: 2px 8px;
+    background: rgba(255,107,53,0.12);
+    border: 1px solid rgba(255,107,53,0.3);
+    border-radius: 20px;
+    font-family: var(--font-mono); font-size: 0.65rem;
+    color: var(--warn);
+  }
+  .sentiment {
+    margin-left: auto;
+    font-family: var(--font-mono); font-size: 0.68rem;
+    padding: 2px 8px; border-radius: 20px;
+  }
+  .sentiment.positive { background: rgba(0,229,160,0.1); color: var(--green); border: 1px solid rgba(0,229,160,0.2); }
+  .sentiment.negative { background: rgba(255,77,77,0.1); color: #ff4d4d; border: 1px solid rgba(255,77,77,0.2); }
+  .sentiment.neutral  { background: rgba(74,90,114,0.2); color: var(--muted); border: 1px solid var(--border); }
+
+  .thread-link { font-size: 0.7rem; color: var(--accent); text-decoration: none; }
+  .thread-link:hover { text-decoration: underline; }
+
+  /* ── Empty / loading states ── */
+  .empty { text-align: center; padding: 48px 0; color: var(--muted); font-size: 0.85rem; }
+  .spinner {
+    display: inline-block;
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    vertical-align: middle; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Hidden ── */
+  .hidden { display: none !important; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">🔍</div>
+    <div>
+      <h1>Steam NLP Scraper</h1>
+      <p>Discussion board keyword analysis &amp; sentiment engine</p>
+    </div>
+    <div class="badge" id="api-status">⬤ CONNECTING</div>
+  </header>
+
+  <!-- 1. Search -->
+  <div class="section" id="section-search">
+    <div class="section-title">01 — Find a Game</div>
+    <div class="card">
+      <div class="search-row">
+        <input type="text" id="game-query" placeholder="Search Steam Store… e.g. Counter-Strike, Rust, Dota 2" />
+        <button class="btn btn-primary" id="btn-search" onclick="doSearch()">Search</button>
+      </div>
+      <div id="games-grid" class="games-grid"></div>
+    </div>
+  </div>
+
+  <!-- 2. Configure -->
+  <div class="section" id="section-config">
+    <div class="section-title">02 — Configure Scrape</div>
+    <div class="card">
+      <div id="selected-game-banner" class="selected-game-banner hidden">
+        <img id="selected-img" src="" alt="" />
+        <div>
+          <div class="name" id="selected-name">—</div>
+          <div class="appid" id="selected-appid">App ID: —</div>
+        </div>
+        <button class="btn btn-sm" onclick="clearSelection()">✕ Clear</button>
+      </div>
+
+      <div>
+        <div class="section-title" style="margin-bottom:10px;">Keywords</div>
+        <div id="kw-tags" class="keyword-area"></div>
+        <div class="kw-add">
+          <input type="text" id="kw-input" placeholder="Add keyword…" onkeydown="kwEnter(event)" />
+          <button class="btn btn-sm" onclick="addKw()">＋ Add</button>
+        </div>
+      </div>
+
+      <div class="config-row">
+        <div>
+          <label>Max Pages to Scrape</label>
+          <input type="number" id="max-pages" value="5" min="1" max="50" />
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="use-selenium" checked />
+          <span class="toggle-track"></span>
+          Use Selenium (JS rendering)
+        </label>
+        <button class="btn btn-accent2" id="btn-scrape" onclick="doScrape()" style="margin-left:auto;" disabled>
+          ▶ Run Scrape
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Progress -->
+  <div class="section hidden" id="section-progress">
+    <div class="section-title">03 — Scraping</div>
+    <div class="card">
+      <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar" style="width:30%"></div></div>
+      <div class="log-box" id="log-box"></div>
+    </div>
+  </div>
+
+  <!-- 4. Results -->
+  <div class="section hidden" id="section-results">
+    <div class="section-title">04 — Results</div>
+
+    <div class="stats-row" id="stats-row"></div>
+
+    <div class="card kw-freq" id="kw-freq-card">
+      <div class="section-title">Keyword Frequency</div>
+      <div id="kw-freq-bars"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Flagged Comments</div>
+      <div class="filter-row">
+        <span>Filter by sentiment:</span>
+        <button class="btn btn-sm active" data-filter="all" onclick="filterSentiment(this,'all')">All</button>
+        <button class="btn btn-sm" data-filter="negative" onclick="filterSentiment(this,'negative')">Negative</button>
+        <button class="btn btn-sm" data-filter="neutral" onclick="filterSentiment(this,'neutral')">Neutral</button>
+        <button class="btn btn-sm" data-filter="positive" onclick="filterSentiment(this,'positive')">Positive</button>
+        <span>Filter by keyword:</span>
+        <select id="kw-filter" onchange="renderComments()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:5px 10px;font-family:var(--font-body);font-size:0.8rem;outline:none;">
+          <option value="all">All Keywords</option>
+        </select>
+      </div>
+      <div id="comments-list"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = ''; // set to '' for same-origin or 'http://localhost:8000' when running separately
+
+let selectedGame = null;
+let keywords = [
+  'cheating','cheat','scam','ban','banned','moderator','unfair',
+  'hack','exploit','toxic','report','abuse','grief','harassment'
+];
+let scrapeResult = null;
+let sentimentFilter = 'all';
+
+// ── API health ────────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(`${API}/api/health`);
+    if (r.ok) {
+      document.getElementById('api-status').textContent = '⬤ CONNECTED';
+      document.getElementById('api-status').style.color = 'var(--green)';
+      document.getElementById('api-status').style.borderColor = 'var(--green)';
+    }
+  } catch {
+    document.getElementById('api-status').textContent = '⬤ OFFLINE';
+    document.getElementById('api-status').style.color = 'var(--warn)';
+  }
+}
+
+// ── Keyword management ────────────────────────────────────────────────────────
+function renderKw() {
+  const c = document.getElementById('kw-tags');
+  c.innerHTML = keywords.map(k => `
+    <span class="kw-tag" onclick="removeKw('${k}')">
+      ${k} <span class="remove">✕</span>
+    </span>`).join('');
+}
+
+function addKw() {
+  const inp = document.getElementById('kw-input');
+  const val = inp.value.trim().toLowerCase();
+  if (val && !keywords.includes(val)) { keywords.push(val); renderKw(); }
+  inp.value = '';
+}
+
+function removeKw(k) { keywords = keywords.filter(x => x !== k); renderKw(); }
+function kwEnter(e) { if (e.key === 'Enter') addKw(); }
+
+// ── Game Search ───────────────────────────────────────────────────────────────
+async function doSearch() {
+  const q = document.getElementById('game-query').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('btn-search');
+  btn.disabled = true; btn.textContent = 'Searching…';
+  document.getElementById('games-grid').innerHTML = '<div class="empty"><span class="spinner"></span>Searching Steam Store…</div>';
+
+  try {
+    const r = await fetch(`${API}/api/search/?q=${encodeURIComponent(q)}&max_results=12`);
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    renderGames(data.results);
+  } catch(e) {
+    document.getElementById('games-grid').innerHTML = `<div class="empty" style="color:var(--warn)">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Search';
+  }
+}
+
+function renderGames(games) {
+  const c = document.getElementById('games-grid');
+  if (!games.length) { c.innerHTML = '<div class="empty">No games found.</div>'; return; }
+  c.innerHTML = games.map(g => `
+    <div class="game-card ${selectedGame?.app_id === g.app_id ? 'selected' : ''}"
+         onclick="selectGame(${JSON.stringify(g).replace(/"/g,'&quot;')})">
+      ${selectedGame?.app_id === g.app_id ? '<span class="selected-badge">✓ SELECTED</span>' : ''}
+      <img src="${g.header_image || ''}" alt="${g.name}"
+           onerror="this.style.display='none'" />
+      <div class="game-card-body">
+        <div class="game-card-name">${g.name}</div>
+        <div class="game-card-price">${g.price || 'Free'}</div>
+        <div class="game-card-id">App ID: ${g.app_id}</div>
+      </div>
+    </div>`).join('');
+}
+
+function selectGame(g) {
+  selectedGame = g;
+  document.getElementById('selected-name').textContent = g.name;
+  document.getElementById('selected-appid').textContent = `App ID: ${g.app_id}`;
+  const img = document.getElementById('selected-img');
+  if (g.header_image) { img.src = g.header_image; img.style.display=''; }
+  else img.style.display='none';
+  document.getElementById('selected-game-banner').classList.remove('hidden');
+  document.getElementById('btn-scrape').disabled = false;
+
+  // Re-render cards to show selection
+  document.querySelectorAll('.game-card').forEach(card => card.classList.remove('selected'));
+  const allCards = document.querySelectorAll('.game-card');
+  // (simple re-render)
+  doSearchRender();
+}
+
+function doSearchRender() {
+  // Just re-render keeping existing results
+  const grid = document.getElementById('games-grid');
+  grid.querySelectorAll('.game-card').forEach(card => {
+    const idEl = card.querySelector('.game-card-id');
+    if (idEl) {
+      const id = parseInt(idEl.textContent.replace('App ID: ',''));
+      if (id === selectedGame?.app_id) {
+        card.classList.add('selected');
+        if (!card.querySelector('.selected-badge')) {
+          const badge = document.createElement('span');
+          badge.className = 'selected-badge'; badge.textContent = '✓ SELECTED';
+          card.prepend(badge);
+        }
+      } else {
+        card.classList.remove('selected');
+        card.querySelector('.selected-badge')?.remove();
+      }
+    }
+  });
+}
+
+function clearSelection() {
+  selectedGame = null;
+  document.getElementById('selected-game-banner').classList.add('hidden');
+  document.getElementById('btn-scrape').disabled = true;
+  doSearchRender();
+}
+
+// ── Scrape ─────────────────────────────────────────────────────────────────────
+let pollInterval = null;
+
+async function doScrape() {
+  if (!selectedGame) return;
+  document.getElementById('section-progress').classList.remove('hidden');
+  document.getElementById('section-results').classList.add('hidden');
+  document.getElementById('btn-scrape').disabled = true;
+
+  const log = document.getElementById('log-box');
+  log.innerHTML = '';
+  addLog('info', `Starting scrape: ${selectedGame.name} (App ${selectedGame.app_id})`);
+  addLog('info', `Keywords: ${keywords.join(', ')}`);
+
+  const body = {
+    app_id: selectedGame.app_id,
+    game_name: selectedGame.name,
+    keywords,
+    max_pages: parseInt(document.getElementById('max-pages').value),
+    use_selenium: document.getElementById('use-selenium').checked,
+  };
+
+  try {
+    // Start background job
+    addLog('info', 'Submitting job to backend…');
+    const startR = await fetch(`${API}/api/scrape/start`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!startR.ok) throw new Error(await startR.text());
+    const { job_id } = await startR.json();
+    addLog('success', `Job started (ID: ${job_id}). Polling for results…`);
+
+    // Animated progress
+    const bar = document.getElementById('progress-bar');
+    let pct = 30;
+    const ticker = setInterval(() => {
+      pct = Math.min(pct + Math.random() * 4, 92);
+      bar.style.width = pct + '%';
+    }, 1200);
+
+    // Poll
+    pollInterval = setInterval(async () => {
+      try {
+        const pollR = await fetch(`${API}/api/scrape/status/${job_id}`);
+        const job = await pollR.json();
+
+        if (job.status === 'done') {
+          clearInterval(pollInterval);
+          clearInterval(ticker);
+          bar.style.width = '100%';
+          addLog('success', 'Scrape complete!');
+          scrapeResult = job.result;
+          renderResults(job.result);
+          document.getElementById('btn-scrape').disabled = false;
+        } else if (job.status === 'error') {
+          clearInterval(pollInterval);
+          clearInterval(ticker);
+          addLog('error', `Job failed: ${job.error}`);
+          document.getElementById('btn-scrape').disabled = false;
+        } else {
+          addLog('info', 'Still running…');
+        }
+      } catch(e) {
+        addLog('error', `Poll error: ${e.message}`);
+      }
+    }, 3000);
+
+  } catch(e) {
+    addLog('error', `Failed: ${e.message}`);
+    document.getElementById('btn-scrape').disabled = false;
+  }
+}
+
+function addLog(type, msg) {
+  const box = document.getElementById('log-box');
+  const div = document.createElement('div');
+  div.className = `log-entry ${type}`;
+  div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Results ───────────────────────────────────────────────────────────────────
+function renderResults(r) {
+  document.getElementById('section-results').classList.remove('hidden');
+
+  // Stats
+  document.getElementById('stats-row').innerHTML = [
+    ['Pages Scraped', r.pages_scraped],
+    ['Threads Found', r.threads_found],
+    ['Comments Scanned', r.comments_scanned],
+    ['Flagged Comments', r.flagged_comments.length],
+    ['Keywords Matched', Object.keys(r.keyword_frequency).length],
+    ['Scrape Errors', r.errors.length],
+  ].map(([lbl, val]) => `
+    <div class="stat-box">
+      <div class="val">${val}</div>
+      <div class="lbl">${lbl.toUpperCase()}</div>
+    </div>`).join('');
+
+  // Keyword frequency bars
+  const freq = r.keyword_frequency;
+  const maxFreq = Math.max(...Object.values(freq), 1);
+  const sorted = Object.entries(freq).sort((a,b) => b[1]-a[1]);
+  document.getElementById('kw-freq-bars').innerHTML = sorted.map(([kw, cnt]) => `
+    <div class="kw-bar-row">
+      <span class="kw-bar-label">${kw}</span>
+      <div class="kw-bar-track">
+        <div class="kw-bar-fill" style="width:${(cnt/maxFreq*100).toFixed(1)}%"></div>
+      </div>
+      <span class="kw-bar-count">${cnt}</span>
+    </div>`).join('') || '<div class="empty">No keywords matched.</div>';
+
+  // Keyword filter dropdown
+  const kwSel = document.getElementById('kw-filter');
+  kwSel.innerHTML = '<option value="all">All Keywords</option>' +
+    sorted.map(([kw]) => `<option value="${kw}">${kw}</option>`).join('');
+
+  // Errors
+  r.errors.forEach(e => addLog('error', e));
+
+  renderComments();
+}
+
+function filterSentiment(btn, filter) {
+  sentimentFilter = filter;
+  document.querySelectorAll('.filter-row .btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderComments();
+}
+
+function renderComments() {
+  if (!scrapeResult) return;
+  const kwFilter = document.getElementById('kw-filter').value;
+  let comments = scrapeResult.flagged_comments;
+
+  if (sentimentFilter !== 'all') comments = comments.filter(c => c.sentiment === sentimentFilter);
+  if (kwFilter !== 'all') comments = comments.filter(c => c.matched_keywords.includes(kwFilter));
+
+  const c = document.getElementById('comments-list');
+  if (!comments.length) { c.innerHTML = '<div class="empty">No comments match the current filters.</div>'; return; }
+
+  c.innerHTML = comments.map(fc => {
+    const body = highlightKeywords(fc.comment_text, fc.matched_keywords);
+    return `
+    <div class="comment-card">
+      <div class="comment-header">
+        <span class="comment-author">👤 ${fc.author}</span>
+        <span class="comment-thread">
+          📌 <a class="thread-link" href="${fc.thread_url}" target="_blank">${fc.thread_title}</a>
+        </span>
+        ${fc.timestamp ? `<span class="comment-ts">${fc.timestamp}</span>` : ''}
+      </div>
+      <div class="comment-body">${body}</div>
+      <div class="comment-footer">
+        ${fc.matched_keywords.map(k => `<span class="kw-chip">${k}</span>`).join('')}
+        ${fc.sentiment ? `<span class="sentiment ${fc.sentiment}">${fc.sentiment} ${fc.sentiment_score?.toFixed(2) ?? ''}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function highlightKeywords(text, kws) {
+  let out = text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  kws.forEach(kw => {
+    const re = new RegExp(`\\b(${kw})\\b`, 'gi');
+    out = out.replace(re, `<span class="highlight">$1</span>`);
+  });
+  return out;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById('game-query').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch();
+});
+renderKw();
+checkHealth();
+</script>
+</body>
+</html>
