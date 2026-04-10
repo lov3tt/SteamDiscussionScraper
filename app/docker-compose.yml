@@ -1,0 +1,21 @@
+# docker-compose.yml
+# Spins up PostgreSQL for the Steam Scraper.
+# Run: docker compose up -d
+# Then: python run.py
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB:       steam_scraper
+    ports:
+      # High port avoids Windows reserved/bind-forbidden ranges for 5432/5433
+      - "15432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+volumes:
+  pg_data:

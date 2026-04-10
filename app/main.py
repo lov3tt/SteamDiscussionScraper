@@ -1,46 +1,51 @@
 """
-Steam Discussion Board NLP Scraper — FastAPI Backend
+app/main.py — FastAPI app with PostgreSQL lifespan
 """
 
-import os
+from pathlib import Path
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from app.routers import search, scrape
+import app.db as db
+from app.routers import scrape, search
+
+# Project root (parent of app/) — index.html lives here; optional static/ for assets
+_ROOT = Path(__file__).resolve().parent.parent
+_STATIC_DIR = _ROOT / "static"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: initialise DB pool + run DDL
+    await db.init_db()
+    yield
+    # Shutdown: close pool
+    await db.close_pool()
+
 
 app = FastAPI(
-    title="Steam Discussion NLP Scraper",
-    description="Search Steam games, scrape discussion boards, and detect flagged keywords via NLP.",
-    version="1.0.0",
+    title="Steam NLP Scraper",
+    version="2.0.0",
+    description="Steam discussion board scraper with PostgreSQL caching",
+    lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.include_router(search.router, prefix="/api/search", tags=["Search"])
+app.include_router(scrape.router, prefix="/api/scrape", tags=["Scrape"])
 
-app.include_router(search.router, prefix="/api/search", tags=["Game Search"])
-app.include_router(scrape.router, prefix="/api/scrape", tags=["Discussion Scraper"])
-
-_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_index_html = os.path.join(_project_root, "index.html")
-
-
-@app.get("/", include_in_schema=False)
-async def serve_frontend():
-    if not os.path.isfile(_index_html):
-        return PlainTextResponse(
-            "Frontend not found. Expected index.html next to the app package.",
-            status_code=404,
-        )
-    return FileResponse(_index_html)
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "message": "Steam NLP Scraper is running"}
+    stats = await db.get_cache_stats()
+    return {"status": "ok", "cache": stats}
+
+
+@app.get("/")
+async def index():
+    return FileResponse(_ROOT / "index.html")

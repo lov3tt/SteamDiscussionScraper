@@ -19,6 +19,8 @@ from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup, Tag
 import httpx
 
+import app.db as db
+
 try:
     from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
@@ -205,30 +207,37 @@ def _parse_comments(html: str, thread_title: str, thread_url: str) -> List[Dict]
     """
     soup = BeautifulSoup(html, "html.parser")
     comments: List[Dict] = []
-    seen_text: set = set()
+    seen_keys: set = set()
 
     rows: List[Tag] = []
-    seen_ids: set = set()
+    seen_row_ids: set = set()
 
     def add_row(el: Optional[Tag]) -> None:
-        if el is None or id(el) in seen_ids:
+        if el is None or id(el) in seen_row_ids:
             return
-        seen_ids.add(id(el))
+        seen_row_ids.add(id(el))
         rows.append(el)
 
-    for div in soup.select("div.commentthread_comment_container"):
+    for div in soup.select("div.commentthread_comment_response"):
         add_row(div)
     for div in soup.select("div.forum_comment"):
         add_row(div)
     for div in soup.select("div.commentthread_comment"):
+        add_row(div)
+    for div in soup.select("div.commentthread_area div.commentthread_comment"):
         add_row(div)
 
     # Opening post / OP (counts as a comment for keyword scan)
     for div in soup.select("div.forum_op"):
         add_row(div)
 
+    # Steam assigns stable ids like comment_12345 on some layouts
+    for div in soup.select("[id^='comment_']"):
+        if isinstance(div, Tag):
+            add_row(div)
+
     if not rows:
-        for a in soup.select("a.forum_comment_permlink"):
+        for a in soup.select("a.forum_comment_permlink, a.forum_comment_permalink"):
             p = a.parent
             for _ in range(12):
                 if p is None:
@@ -254,10 +263,11 @@ def _parse_comments(html: str, thread_title: str, thread_url: str) -> List[Dict]
         text = _extract_body_from_row(block)
         if not text:
             continue
-        key = (author, text[:120])
-        if key in seen_text:
+        dom_id = block.get("id") or block.get("data-commentid") or ""
+        dedup = f"{dom_id}|{author}|{timestamp}|{text}" if dom_id else f"{author}|{timestamp}|{text}"
+        if dedup in seen_keys:
             continue
-        seen_text.add(key)
+        seen_keys.add(dedup)
         comments.append(
             {
                 "thread_title": thread_title,
@@ -278,6 +288,8 @@ def _normalize_for_keywords(text: str) -> str:
     t = unicodedata.normalize("NFKC", text)
     t = t.casefold()
     t = re.sub(r"[\u200b-\u200f\ufeff\u2060\u00ad]+", "", t)
+    # So "anti-cheat" / "anti_cheat" can match keyword "cheat"
+    t = re.sub(r"[-_/]+", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
@@ -286,16 +298,16 @@ def _find_keywords(text: str, keywords: List[str]) -> List[str]:
     """
     Match user keywords against comment text.
 
-    Uses Unicode-aware \\w boundaries (not ASCII-only [a-z0-9]), phrase detection,
-    and prefix matching for longer roots (e.g. cheat → cheating) so Steam-style
-    prose still hits.
+    Uses Unicode-aware \\w boundaries, phrase detection, and prefix matching (>=3 chars)
+    so short stems like "ban" still match "banned" / "banning" (previously only >=4).
+    Final fallback: alphanumeric boundary substring for stubborn punctuation/Steam markup.
     """
     norm = _normalize_for_keywords(text)
     if not norm:
         return []
 
     found: List[str] = []
-    seen_lower: set = set()
+    matched_lower: set = set()
 
     for kw in keywords:
         if kw is None:
@@ -303,39 +315,62 @@ def _find_keywords(text: str, keywords: List[str]) -> List[str]:
         original = str(kw).strip()
         if not original:
             continue
-        kl = original.casefold()
-        if kl in seen_lower:
+        kl = unicodedata.normalize("NFKC", original).casefold()
+        kl = re.sub(r"[\u200b-\u200f\ufeff\u2060\u00ad]+", "", kl)
+        kl = re.sub(r"[-_/]+", " ", kl)
+        kl = re.sub(r"\s+", " ", kl).strip()
+        if not kl or kl in matched_lower:
             continue
 
         try:
             escaped = re.escape(kl)
         except re.error:
-            continue
-
-        # Multi-word phrase: must appear as a contiguous substring
-        if " " in kl:
             if kl in norm:
-                seen_lower.add(kl)
+                matched_lower.add(kl)
                 found.append(original)
             continue
 
-        # Single "word": Unicode word boundaries (\\w matches letters including Cyrillic, etc.)
+        # Multi-word phrase: contiguous substring in normalized text
+        if " " in kl:
+            if kl in norm:
+                matched_lower.add(kl)
+                found.append(original)
+            continue
+
+        hit = False
+
+        # Whole token (Unicode letters/digits/underscore as "word" chars)
         if re.search(rf"(?<!\w){escaped}(?!\w)", norm, flags=re.UNICODE):
-            seen_lower.add(kl)
-            found.append(original)
-            continue
+            hit = True
 
-        # Longer roots (>= 4): prefix inside a larger token — cheat/cheating/cheated
-        if len(kl) >= 4 and re.search(rf"(?<!\w){escaped}(?=\w)", norm, flags=re.UNICODE):
-            seen_lower.add(kl)
-            found.append(original)
-            continue
+        # Prefix at word start: ban→banned, mod→moderator, cheat→cheating (len >= 3)
+        if not hit and len(kl) >= 3 and re.search(
+            rf"(?<!\w){escaped}(?=\w)", norm, flags=re.UNICODE
+        ):
+            hit = True
 
-        # Short English keys often appear with punctuation stuck: "(ban)", "ban.", "ban!"
-        if re.search(rf"(?<!\w){escaped}(?=\W|$)", norm, flags=re.UNICODE):
-            seen_lower.add(kl)
+        # Token followed by non-word or end: "ban." "(hack)"
+        if not hit and re.search(rf"(?<!\w){escaped}(?=\W|$)", norm, flags=re.UNICODE):
+            hit = True
+
+        # Alphanumeric-boundary substring (handles odd Steam punctuation / mixed scripts)
+        if not hit and len(kl) >= 3:
+            start = 0
+            while True:
+                pos = norm.find(kl, start)
+                if pos < 0:
+                    break
+                before_ok = pos == 0 or not norm[pos - 1].isalnum()
+                end = pos + len(kl)
+                after_ok = end >= len(norm) or not norm[end].isalnum()
+                if before_ok and after_ok:
+                    hit = True
+                    break
+                start = pos + 1
+
+        if hit:
+            matched_lower.add(kl)
             found.append(original)
-            continue
 
     return found
 
@@ -366,6 +401,71 @@ def _cancelled(job_state: Optional[Dict[str, Any]]) -> bool:
     return bool(ev and ev.is_set())
 
 
+def _comments_for_db(comments: List[Dict]) -> List[Dict]:
+    return [
+        {
+            "author": c.get("author", "Unknown"),
+            "timestamp": c.get("timestamp"),
+            "text": c.get("text", ""),
+        }
+        for c in comments
+    ]
+
+
+async def _steam_expand_thread_comments(page: Any) -> None:
+    """Scroll and click Steam paging / 'load more' so more comments exist in the DOM."""
+    try:
+        stagnant = 0
+        for _ in range(30):
+            prev_h = int(await page.evaluate("document.body.scrollHeight || 0"))
+            clicked = False
+            try:
+                links = page.locator("a.commentthread_pagelink, .forum_paging a, .commentthread_paging a")
+                n = await links.count()
+                for j in range(min(n, 50)):
+                    try:
+                        a = links.nth(j)
+                        if not await a.is_visible(timeout=300):
+                            continue
+                        txt = (await a.inner_text()).strip().lower()
+                        if any(x in txt for x in (">", "»", "next", ">>")) or txt in (">", "»"):
+                            await a.click(timeout=2500)
+                            await asyncio.sleep(0.65)
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            if not clicked:
+                for label in (
+                    "Load more comments",
+                    "View remaining comments",
+                    "Show more comments",
+                    "View all comments",
+                ):
+                    try:
+                        btn = page.get_by_text(label, exact=False).first
+                        if await btn.count() > 0 and await btn.is_visible(timeout=400):
+                            await btn.click(timeout=2500)
+                            await asyncio.sleep(0.7)
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(0.45)
+            new_h = int(await page.evaluate("document.body.scrollHeight || 0"))
+            if new_h <= prev_h and not clicked:
+                stagnant += 1
+            else:
+                stagnant = 0
+            if stagnant >= 5:
+                break
+    except Exception as exc:
+        logger.debug("steam_expand_thread_comments: %s", exc)
+
+
 async def _run_with_fetch(
     app_id: int,
     game_name: str,
@@ -374,6 +474,7 @@ async def _run_with_fetch(
     fetch_fn: FetchFn,
     errors: List[str],
     job_state: Optional[Dict[str, Any]] = None,
+    force_refresh: bool = False,
 ) -> ScrapeResult:
     keywords = [str(k).strip() for k in keywords if k is not None and str(k).strip()]
     discussion_url = DISCUSSION_BASE.format(app_id=app_id)
@@ -400,10 +501,34 @@ async def _run_with_fetch(
         if _cancelled(job_state):
             errors.append("Stopped by user during listing.")
             break
-        url = THREAD_LIST_URL.format(app_id=app_id, page=page)
+        list_url = THREAD_LIST_URL.format(app_id=app_id, page=page)
+        threads_on_page: List[Tuple[str, str]] = []
+        cache_note = ""
         try:
-            html = await fetch_fn(url, ".forum_topic_name", 2.5, is_thread_page=False)
-            threads_on_page = _parse_thread_links(html, app_id)
+            if not force_refresh:
+                cached_rows = await db.get_cached_thread_list(app_id, page)
+                if cached_rows:
+                    for row in cached_rows:
+                        u = (row.get("url") or "").strip()
+                        tit = (row.get("title") or "").strip() or u
+                        if not u:
+                            continue
+                        threads_on_page.append((tit, steam_community_url(u)))
+                    cache_note = " [CACHE] thread list"
+
+            if not threads_on_page:
+                html = await fetch_fn(
+                    list_url, ".forum_topic_name", 2.5, is_thread_page=False
+                )
+                await db.set_cached_html(list_url, html)
+                threads_on_page = _parse_thread_links(html, app_id)
+                if threads_on_page:
+                    await db.set_cached_thread_list(
+                        app_id,
+                        page,
+                        [{"title": a, "url": b} for a, b in threads_on_page],
+                    )
+
             if not threads_on_page:
                 logger.info("No threads on page %s, stopping pagination.", page)
                 break
@@ -414,7 +539,10 @@ async def _run_with_fetch(
                 page_index=page + 1,
                 pages_scraped=pages_scraped,
                 threads_discovered=len(all_threads),
-                message=f"List page {page + 1}/{max_pages}: +{len(threads_on_page)} threads",
+                message=(
+                    f"List page {page + 1}/{max_pages}: +{len(threads_on_page)} threads"
+                    f"{cache_note}"
+                ),
             )
             logger.info("Page %s: found %s threads.", page, len(threads_on_page))
         except Exception as exc:
@@ -449,13 +577,57 @@ async def _run_with_fetch(
             message=f"Thread {ti + 1}/{n_threads}: loading…",
         )
         try:
-            html = await fetch_fn(
-                thread_url,
-                ".forum_comment, .commentthread_comment, .forum_op, .forum_topic_op",
-                2.5,
-                is_thread_page=True,
-            )
-            comments = _parse_comments(html, thread_title, thread_url)
+            comments: List[Dict] = []
+            src_note = ""
+
+            if not force_refresh:
+                blob = await db.get_cached_comments(thread_url)
+                if blob:
+                    raw = blob.get("comments") or []
+                    for row in raw:
+                        body = (row.get("text") or "").strip()
+                        if not body:
+                            continue
+                        comments.append(
+                            {
+                                "thread_title": thread_title,
+                                "thread_url": thread_url,
+                                "author": row.get("author", "Unknown"),
+                                "timestamp": row.get("timestamp"),
+                                "text": body,
+                            }
+                        )
+                    if comments:
+                        src_note = "[CACHE] parsed comments"
+
+            if not comments and not force_refresh:
+                html = await db.get_cached_html(thread_url)
+                if html:
+                    comments = _parse_comments(html, thread_title, thread_url)
+                    if comments:
+                        await db.set_cached_comments(
+                            thread_url,
+                            thread_title,
+                            _comments_for_db(comments),
+                        )
+                        src_note = "[CACHE] HTML → parse"
+
+            if not comments:
+                html = await fetch_fn(
+                    thread_url,
+                    ".forum_comment, .commentthread_comment, .forum_op, .forum_topic_op",
+                    2.5,
+                    is_thread_page=True,
+                )
+                await db.set_cached_html(thread_url, html)
+                comments = _parse_comments(html, thread_title, thread_url)
+                if comments:
+                    await db.set_cached_comments(
+                        thread_url,
+                        thread_title,
+                        _comments_for_db(comments),
+                    )
+
             if not comments:
                 _touch_progress(
                     job_state,
@@ -464,6 +636,15 @@ async def _run_with_fetch(
                         "(layout may differ or page still loading)"
                     ),
                 )
+            elif src_note:
+                _touch_progress(
+                    job_state,
+                    message=(
+                        f"Thread {ti + 1}/{n_threads}: {src_note} "
+                        f"({len(comments)} comments) — matching keywords…"
+                    ),
+                )
+
             for idx, c in enumerate(comments):
                 if _cancelled(job_state):
                     errors.append("Stopped by user while reading comments.")
@@ -492,6 +673,7 @@ async def _run_with_fetch(
                         message=(
                             f"Thread {ti + 1}/{n_threads}: read {idx + 1}/{len(comments)} comments "
                             f"({total_comments} total, {len(flagged)} flagged)"
+                            f" {src_note}".rstrip()
                         ),
                     )
             if _cancelled(job_state):
@@ -528,11 +710,12 @@ async def run_scrape_pipeline(
     keywords: List[str],
     max_pages: int,
     job_state: Optional[Dict[str, Any]] = None,
+    force_refresh: bool = False,
 ) -> ScrapeResult:
     """
-    Always uses Playwright when installed; otherwise httpx only.
-    On Playwright launch/runtime errors, falls back to httpx and records errors.
-    Optional job_state: { "progress": dict, "cancel": asyncio.Event } for UI progress / stop.
+    Uses Playwright when installed; otherwise httpx. Thread pages are expanded (scroll /
+    load-more) in Playwright so more comments appear in the DOM. PostgreSQL caches
+    thread lists, HTML, and parsed comments unless force_refresh is True.
     """
     errors: List[str] = []
 
@@ -547,7 +730,14 @@ async def run_scrape_pipeline(
     if not PLAYWRIGHT_AVAILABLE:
         errors.append("Playwright is not installed; using HTTP-only fetching.")
         return await _run_with_fetch(
-            app_id, game_name, keywords, max_pages, fetch_http, errors, job_state
+            app_id,
+            game_name,
+            keywords,
+            max_pages,
+            fetch_http,
+            errors,
+            job_state,
+            force_refresh=force_refresh,
         )
 
     try:
@@ -595,10 +785,19 @@ async def run_scrape_pipeline(
                             continue
 
                     await asyncio.sleep(pause)
+                    if is_thread_page:
+                        await _steam_expand_thread_comments(page)
                     return await page.content()
 
                 return await _run_with_fetch(
-                    app_id, game_name, keywords, max_pages, fetch_pw, errors, job_state
+                    app_id,
+                    game_name,
+                    keywords,
+                    max_pages,
+                    fetch_pw,
+                    errors,
+                    job_state,
+                    force_refresh=force_refresh,
                 )
             finally:
                 await browser.close()
@@ -616,6 +815,7 @@ async def run_scrape_pipeline(
             fetch_http,
             list(errors),
             job_state,
+            force_refresh=force_refresh,
         )
 
 
