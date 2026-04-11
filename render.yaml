@@ -1,10 +1,10 @@
 # Render Blueprint: https://render.com/docs/infrastructure-as-code
-# In the Render dashboard: New → Blueprint → connect this repo, or `render blueprint apply`.
 #
-# Notes:
-# - Docker + Playwright needs enough RAM; `starter` web is a practical minimum.
-# - Create / link the Postgres database first, or let this file provision `steam-scraper-db`.
-# - After deploy, open the web URL; the UI is served from `/`.
+# If DATABASE_URL is missing on the web service, the app cannot start — check
+# Dashboard → Web Service → Environment after deploy. When not using this file,
+# paste the Postgres "Internal Database URL" as DATABASE_URL manually.
+#
+# Docker + Playwright: use at least a Starter web instance.
 
 services:
   - type: web

@@ -40,24 +40,49 @@ def _jsonb_to_python(value: Any) -> Any:
 _pool: Optional[asyncpg.Pool] = None
 
 
+def _is_render() -> bool:
+    return os.environ.get("RENDER", "").strip().lower() in ("true", "1", "yes")
+
+
 def _database_url() -> str:
-    """Resolve DSN: local default, Render/postgres:// → postgresql:// for asyncpg."""
-    raw = os.environ.get(
-        "DATABASE_URL",
-        # Matches app/docker-compose.yml host port (15432 → container 5432)
-        "postgresql://postgres:postgres@localhost:15432/steam_scraper",
-    ).strip()
+    """
+    Resolve DSN. On Render, DATABASE_URL must be set (link Postgres in the dashboard
+    or use render.yaml fromDatabase); there is no localhost default in production.
+    """
+    raw = os.environ.get("DATABASE_URL", "").strip()
+    if _is_render():
+        if not raw:
+            raise RuntimeError(
+                "DATABASE_URL is not set. In Render: open your PostgreSQL instance → "
+                "copy the **Internal Database URL** → Web Service → Environment → "
+                "add variable DATABASE_URL with that value. If you use a Blueprint, "
+                "ensure the database name in render.yaml matches and redeploy."
+            )
+        if "localhost" in raw or raw.startswith("postgresql://@") or "127.0.0.1" in raw:
+            raise RuntimeError(
+                "DATABASE_URL points at localhost, which does not work on Render. "
+                "Use the Internal Database URL from your Render PostgreSQL dashboard."
+            )
+    elif not raw:
+        raw = "postgresql://postgres:postgres@localhost:15432/steam_scraper"
+
     if raw.startswith("postgres://"):
         raw = "postgresql://" + raw[len("postgres://") :]
     return raw
 
 
-DATABASE_URL = _database_url()
-
-
-def _pool_ssl() -> Optional[bool]:
-    """Render Postgres is TLS-terminated; asyncpg needs ssl outside local Docker."""
-    if os.environ.get("RENDER", "").strip().lower() in ("true", "1", "yes"):
+def _pool_ssl_for_dsn(dsn: str) -> Optional[bool]:
+    """
+    Render Postgres requires TLS. Prefer sslmode/ssl in the URL (Render's copy-paste
+    strings usually include it). Only pass ssl=True when the DSN omits TLS hints —
+    never ssl=True to localhost (misconfiguration / missing DATABASE_URL).
+    """
+    low = dsn.lower()
+    if "sslmode=" in low or "ssl=require" in low or "ssl=true" in low:
+        return None
+    if "localhost" in low or "127.0.0.1" in low:
+        return None
+    if _is_render() and ("render.com" in low or "neon.tech" in low):
         return True
     return None
 
@@ -65,11 +90,12 @@ def _pool_ssl() -> Optional[bool]:
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        ssl = _pool_ssl()
-        kwargs: Dict[str, Any] = {"min_size": 2, "max_size": 10}
+        dsn = _database_url()
+        ssl = _pool_ssl_for_dsn(dsn)
+        kwargs: Dict[str, Any] = {"min_size": 1, "max_size": 10}
         if ssl is not None:
             kwargs["ssl"] = ssl
-        _pool = await asyncpg.create_pool(DATABASE_URL, **kwargs)
+        _pool = await asyncpg.create_pool(dsn, **kwargs)
     return _pool
 
 

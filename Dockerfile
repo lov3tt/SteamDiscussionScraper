@@ -1,6 +1,6 @@
 # Steam Discussion Scraper — production image (FastAPI + Playwright Chromium + PostgreSQL)
-# Deploy on Render.com as a Web Service (Docker). Link a Render PostgreSQL instance; set
-# DATABASE_URL via Blueprint or the dashboard (Render injects it automatically).
+# On Render: set DATABASE_URL to your Postgres **Internal Database URL** (Environment tab),
+# or use render.yaml fromDatabase. The app does not use localhost on Render.
 
 FROM python:3.12-slim-bookworm
 
