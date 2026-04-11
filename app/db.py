@@ -39,11 +39,14 @@ def _jsonb_to_python(value: Any) -> Any:
 
 _pool: Optional[asyncpg.Pool] = None
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    # Matches app/docker-compose.yml host port (15432 → container 5432)
-    "postgresql://postgres:postgres@localhost:15432/steam_scraper",
-)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# If on Render, fix the protocol if necessary
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+else:
+    # Local fallback
+    DATABASE_URL = "postgresql://postgres:postgres@localhost:15432/steam_scraper"
 
 
 async def get_pool() -> asyncpg.Pool:
