@@ -3,13 +3,12 @@
 """
 
 import asyncio
-import csv
-import io
 import json
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 from app.models.schemas import ScrapeRequest, ScrapeResult
 from app.services.scraper import run_scrape_pipeline
@@ -202,6 +201,12 @@ async def delete_result(result_id: int):
 
 # ── Download endpoints ────────────────────────────────────────────────────────
 
+def _download_json_filename(game_name: str, scraped_at) -> str:
+    ts = scraped_at.strftime("%Y%m%d_%H%M%S") if scraped_at else "unknown"
+    slug = re.sub(r"[^\w.\-]+", "_", (game_name or "scrape").strip())[:40].strip("_") or "scrape"
+    return f"steam_scrape_{slug}_{ts}.json"
+
+
 @router.get("/results/{result_id}/download/json", summary="Download result as JSON")
 async def download_json(result_id: int):
     row = await db.get_scrape_result_by_id(result_id)
@@ -209,55 +214,19 @@ async def download_json(result_id: int):
         raise HTTPException(status_code=404, detail="Result not found")
 
     scraped_at = row["scraped_at"]
-    ts = scraped_at.strftime("%Y%m%d_%H%M%S") if scraped_at else "unknown"
-    game_slug = row["game_name"].replace(" ", "_")[:40]
-    filename = f"steam_scrape_{game_slug}_{ts}.json"
+    filename = _download_json_filename(row["game_name"], scraped_at)
 
     payload = {
         "scraped_at": scraped_at.isoformat() if scraped_at else None,
         "game_name": row["game_name"],
         **row["result"],
     }
-
-    return StreamingResponse(
-        io.BytesIO(json.dumps(payload, indent=2).encode()),
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@router.get("/results/{result_id}/download/csv", summary="Download flagged comments as CSV")
-async def download_csv(result_id: int):
-    row = await db.get_scrape_result_by_id(result_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Result not found")
-
-    scraped_at = row["scraped_at"]
-    ts = scraped_at.strftime("%Y%m%d_%H%M%S") if scraped_at else "unknown"
-    game_slug = row["game_name"].replace(" ", "_")[:40]
-    filename = f"steam_flagged_{game_slug}_{ts}.csv"
-
-    result = row["result"]
-    output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=[
-            "thread_title", "thread_url", "author", "timestamp",
-            "comment_text", "matched_keywords", "sentiment", "sentiment_score",
-        ],
-    )
-    writer.writeheader()
-    for fc in result.get("flagged_comments", []):
-        writer.writerow(
-            {
-                **fc,
-                "matched_keywords": ", ".join(fc.get("matched_keywords", [])),
-            }
-        )
-
-    return StreamingResponse(
-        io.BytesIO(output.getvalue().encode("utf-8-sig")),  # BOM for Excel
-        media_type="text/csv",
+    # Compact JSON (no indent) — less RAM and smaller downloads
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    # octet-stream + attachment so browsers save a file instead of opening inline JSON
+    return Response(
+        content=body,
+        media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

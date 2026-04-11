@@ -541,11 +541,8 @@
       <div class="ts">
         Last scraped: <strong id="result-scraped-at">—</strong>
       </div>
-      <button class="btn btn-green" id="btn-dl-json" onclick="downloadResult('json')" disabled>
+      <button class="btn btn-green" id="btn-dl-json" onclick="downloadResultJson()" disabled>
         ⬇ Download JSON
-      </button>
-      <button class="btn btn-green" id="btn-dl-csv" onclick="downloadResult('csv')" disabled>
-        ⬇ Download CSV
       </button>
       <button class="btn btn-warn" id="btn-refresh-cache" onclick="forceRefreshCurrent()" disabled>
         🔄 Refresh Cache
@@ -1021,7 +1018,6 @@ async function findAndSetResultId(result) {
     if (rows && rows.length > 0) {
       currentResultId = rows[0].id;
       document.getElementById('btn-dl-json').disabled = false;
-      document.getElementById('btn-dl-csv').disabled  = false;
       document.getElementById('btn-refresh-cache').disabled = false;
     }
   } catch {}
@@ -1069,13 +1065,60 @@ function highlightKeywords(text, kws) {
   return out;
 }
 
-// ── Downloads ─────────────────────────────────────────────────────────────────
-function downloadResult(format) {
+// ── Downloads (fetch → blob: reliable filename; avoids navigating to JSON in-tab) ──
+async function downloadResultJson() {
   if (!currentResultId) return;
-  const url = `${API}/api/scrape/results/${currentResultId}/download/${format}`;
-  const a = document.createElement('a');
-  a.href = url; a.download = ''; a.style.display = 'none';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  const url = `${API}/api/scrape/results/${currentResultId}/download/json`;
+  try {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    let name = `steam_scrape_${currentResultId}.json`;
+    const cd = r.headers.get('Content-Disposition');
+    if (cd) {
+      const q = cd.match(/filename="([^"]+)"/i);
+      if (q) name = q[1].trim();
+      else {
+        const u8 = cd.match(/filename\*=UTF-8''([^;\s]+)/i);
+        if (u8) name = decodeURIComponent(u8[1]).trim();
+      }
+    }
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = u; a.download = name; a.rel = 'noopener'; document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(u);
+  } catch (e) {
+    alert(`Download failed: ${e.message}`);
+  }
+}
+
+async function downloadSavedJson(id) {
+  const url = `${API}/api/scrape/results/${id}/download/json`;
+  try {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    let name = `steam_scrape_${id}.json`;
+    const cd = r.headers.get('Content-Disposition');
+    if (cd) {
+      const q = cd.match(/filename="([^"]+)"/i);
+      if (q) name = q[1].trim();
+      else {
+        const u8 = cd.match(/filename\*=UTF-8''([^;\s]+)/i);
+        if (u8) name = decodeURIComponent(u8[1]).trim();
+      }
+    }
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = u; a.download = name; document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(u);
+  } catch (e) {
+    alert(`Download failed: ${e.message}`);
+  }
 }
 
 async function forceRefreshCurrent() {
@@ -1107,8 +1150,7 @@ async function loadSavedResults() {
         </div>
         <div class="saved-actions">
           <button class="btn btn-sm" onclick="loadSavedResult(${row.id})">Load</button>
-          <a class="btn btn-sm" href="${API}/api/scrape/results/${row.id}/download/json" download>JSON</a>
-          <a class="btn btn-sm" href="${API}/api/scrape/results/${row.id}/download/csv" download>CSV</a>
+          <button type="button" class="btn btn-sm" onclick="downloadSavedJson(${row.id})">JSON</button>
           <button class="btn btn-sm danger" onclick="deleteSavedResult(${row.id})">🗑</button>
         </div>
       </div>`;

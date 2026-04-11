@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import threading
 import unicodedata
 from collections import Counter
 from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple
@@ -29,21 +31,63 @@ except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
 try:
-    from nltk.sentiment.vader import SentimentIntensityAnalyzer
-    import nltk
+    import nltk  # noqa: F401
 
-    try:
-        nltk.data.find("sentiment/vader_lexicon.zip")
-    except LookupError:
-        nltk.download("vader_lexicon", quiet=True)
-    _sia = SentimentIntensityAnalyzer()
-    VADER_AVAILABLE = True
+    _NLTK_IMPORT_OK = True
 except Exception:
-    VADER_AVAILABLE = False
+    _NLTK_IMPORT_OK = False
+
+_sia = None
+_sia_lock = threading.Lock()
+VADER_AVAILABLE = True  # set False if lazy init fails at first use
+
+
+def _lazy_sentiment_analyzer():
+    """Load VADER only on first sentiment call (saves RAM on health checks / idle workers)."""
+    global _sia, VADER_AVAILABLE
+    if _sia is not None:
+        return _sia
+    with _sia_lock:
+        if _sia is not None:
+            return _sia
+        if not _NLTK_IMPORT_OK:
+            VADER_AVAILABLE = False
+            return None
+        try:
+            import nltk
+            from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+            try:
+                nltk.data.find("sentiment/vader_lexicon.zip")
+            except LookupError:
+                nltk.download("vader_lexicon", quiet=True)
+            _sia = SentimentIntensityAnalyzer()
+            return _sia
+        except Exception:
+            VADER_AVAILABLE = False
+            return None
+
 
 from app.models.schemas import FlaggedComment, ScrapeResult
 
 logger = logging.getLogger(__name__)
+
+
+def _low_memory_mode() -> bool:
+    """Tighter Playwright / expand limits for ~256MB RAM hosts (LOW_MEMORY=1 or Render)."""
+    v = os.environ.get("LOW_MEMORY", "").strip().lower()
+    if v in ("0", "false", "no"):
+        return False
+    if v in ("1", "true", "yes"):
+        return True
+    return os.environ.get("RENDER", "").strip().lower() in ("true", "1", "yes")
+
+
+def _fetch_pauses() -> Tuple[float, float]:
+    """(list_page_pause, thread_page_pause) — shorter waits in LOW_MEMORY mode."""
+    if _low_memory_mode():
+        return 1.12, 1.02
+    return 2.5, 2.0
 
 _PLAYWRIGHT_HINT = (
     "Install browsers for the same Python you use to run the app: "
@@ -376,9 +420,10 @@ def _find_keywords(text: str, keywords: List[str]) -> List[str]:
 
 
 def _sentiment(text: str) -> Tuple[str, float]:
-    if not VADER_AVAILABLE:
+    sia = _lazy_sentiment_analyzer()
+    if sia is None:
         return "N/A", 0.0
-    scores = _sia.polarity_scores(text)
+    scores = sia.polarity_scores(text)
     compound = scores["compound"]
     if compound >= 0.05:
         label = "positive"
@@ -414,9 +459,12 @@ def _comments_for_db(comments: List[Dict]) -> List[Dict]:
 
 async def _steam_expand_thread_comments(page: Any) -> None:
     """Scroll and click Steam paging / 'load more' so more comments exist in the DOM."""
+    low = _low_memory_mode()
+    max_rounds = 12 if low else 30
+    stagnant_cap = 3 if low else 5
     try:
         stagnant = 0
-        for _ in range(30):
+        for _ in range(max_rounds):
             prev_h = int(await page.evaluate("document.body.scrollHeight || 0"))
             clicked = False
             try:
@@ -460,7 +508,7 @@ async def _steam_expand_thread_comments(page: Any) -> None:
                 stagnant += 1
             else:
                 stagnant = 0
-            if stagnant >= 5:
+            if stagnant >= stagnant_cap:
                 break
     except Exception as exc:
         logger.debug("steam_expand_thread_comments: %s", exc)
@@ -518,10 +566,11 @@ async def _run_with_fetch(
 
             if not threads_on_page:
                 html = await fetch_fn(
-                    list_url, ".forum_topic_name", 2.5, is_thread_page=False
+                    list_url, ".forum_topic_name", _pause_list, is_thread_page=False
                 )
                 await db.set_cached_html(list_url, html)
                 threads_on_page = _parse_thread_links(html, app_id)
+                del html
                 if threads_on_page:
                     await db.set_cached_thread_list(
                         app_id,
@@ -558,6 +607,7 @@ async def _run_with_fetch(
 
     n_threads = len(unique_threads)
     logger.info("Total unique threads to scrape: %s", n_threads)
+    _pause_list, _pause_thread = _fetch_pauses()
     _touch_progress(
         job_state,
         phase="scraping_threads",
@@ -604,6 +654,7 @@ async def _run_with_fetch(
                 html = await db.get_cached_html(thread_url)
                 if html:
                     comments = _parse_comments(html, thread_title, thread_url)
+                    del html
                     if comments:
                         await db.set_cached_comments(
                             thread_url,
@@ -616,11 +667,12 @@ async def _run_with_fetch(
                 html = await fetch_fn(
                     thread_url,
                     ".forum_comment, .commentthread_comment, .forum_op, .forum_topic_op",
-                    2.5,
+                    _pause_thread,
                     is_thread_page=True,
                 )
                 await db.set_cached_html(thread_url, html)
                 comments = _parse_comments(html, thread_title, thread_url)
+                del html
                 if comments:
                     await db.set_cached_comments(
                         thread_url,
@@ -741,22 +793,39 @@ async def run_scrape_pipeline(
         )
 
     try:
+        low = _low_memory_mode()
+        chromium_args = [
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--mute-audio",
+            "--no-first-run",
+            "--disable-infobars",
+        ]
+        if low:
+            chromium_args.append("--disable-background-timer-throttling")
+        viewport = (
+            {"width": 800, "height": 560}
+            if low
+            else {"width": 1280, "height": 900}
+        )
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=[
-                    "--disable-gpu",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
+                args=chromium_args,
             )
             try:
                 context = await browser.new_context(
                     user_agent=USER_AGENT,
-                    viewport={"width": 1280, "height": 900},
+                    viewport=viewport,
                     locale="en-US",
                 )
                 page = await context.new_page()
+
+                sel_timeout = 8000 if low else 12_000
 
                 async def fetch_pw(
                     url: str,
@@ -779,7 +848,7 @@ async def run_scrape_pipeline(
 
                     for sel in selectors:
                         try:
-                            await page.wait_for_selector(sel, timeout=12_000)
+                            await page.wait_for_selector(sel, timeout=sel_timeout)
                             break
                         except PlaywrightTimeout:
                             continue

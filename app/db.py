@@ -92,7 +92,10 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         dsn = _database_url()
         ssl = _pool_ssl_for_dsn(dsn)
-        kwargs: Dict[str, Any] = {"min_size": 1, "max_size": 10}
+        # Small pools for 256MB-class hosts (override with DB_POOL_MAX)
+        _mx = int(os.environ.get("DB_POOL_MAX", "2"))
+        _mx = max(1, min(_mx, 20))
+        kwargs: Dict[str, Any] = {"min_size": 1, "max_size": _mx}
         if ssl is not None:
             kwargs["ssl"] = ssl
         _pool = await asyncpg.create_pool(dsn, **kwargs)

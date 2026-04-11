@@ -8,7 +8,9 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    LOW_MEMORY=1 \
+    DB_POOL_MAX=2
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
