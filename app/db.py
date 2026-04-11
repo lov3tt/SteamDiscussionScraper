@@ -49,7 +49,12 @@ DATABASE_URL = os.environ.get(
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(
+    DATABASE_URL, 
+    min_size=2, 
+    max_size=10,
+    ssl="require"  # Add this line
+)
     return _pool
 
 
