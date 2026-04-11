@@ -39,31 +39,18 @@ def _jsonb_to_python(value: Any) -> Any:
 
 _pool: Optional[asyncpg.Pool] = None
 
-import os
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    # Matches app/docker-compose.yml host port (15432 → container 5432)
+    "postgresql://postgres:postgres@localhost:15432/steam_scraper",
+)
 
-# 1. Get the URL from the environment
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if DATABASE_URL:
-    # 2. Fix the protocol for asyncpg if it's the old 'postgres://' style
-    if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-else:
-    # 3. ONLY use localhost if the environment variable doesn't exist at all
-    DATABASE_URL = "postgresql://postgres:postgres@localhost:15432/steam_scraper"
 
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        # Use the finalized DATABASE_URL here
-        _pool = await asyncpg.create_pool(
-            DATABASE_URL, 
-            min_size=2, 
-            max_size=10,
-            ssl="require" 
-        )
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
     return _pool
-
 
 
 async def close_pool() -> None:
