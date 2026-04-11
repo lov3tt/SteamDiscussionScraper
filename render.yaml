@@ -1,0 +1,29 @@
+# Render Blueprint: https://render.com/docs/infrastructure-as-code
+# In the Render dashboard: New → Blueprint → connect this repo, or `render blueprint apply`.
+#
+# Notes:
+# - Docker + Playwright needs enough RAM; `starter` web is a practical minimum.
+# - Create / link the Postgres database first, or let this file provision `steam-scraper-db`.
+# - After deploy, open the web URL; the UI is served from `/`.
+
+services:
+  - type: web
+    name: steam-discussion-scraper
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: steam-scraper-db
+          property: connectionString
+
+databases:
+  - name: steam-scraper-db
+    databaseName: steam_scraper
+    user: steam_scraper
+    plan: free

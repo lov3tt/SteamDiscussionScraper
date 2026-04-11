@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.env
+.env.*
+*.md
+.cursor
+terminals
+.pytest_cache
+.mypy_cache

@@ -39,17 +39,37 @@ def _jsonb_to_python(value: Any) -> Any:
 
 _pool: Optional[asyncpg.Pool] = None
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    # Matches app/docker-compose.yml host port (15432 → container 5432)
-    "postgresql://postgres:postgres@localhost:15432/steam_scraper",
-)
+
+def _database_url() -> str:
+    """Resolve DSN: local default, Render/postgres:// → postgresql:// for asyncpg."""
+    raw = os.environ.get(
+        "DATABASE_URL",
+        # Matches app/docker-compose.yml host port (15432 → container 5432)
+        "postgresql://postgres:postgres@localhost:15432/steam_scraper",
+    ).strip()
+    if raw.startswith("postgres://"):
+        raw = "postgresql://" + raw[len("postgres://") :]
+    return raw
+
+
+DATABASE_URL = _database_url()
+
+
+def _pool_ssl() -> Optional[bool]:
+    """Render Postgres is TLS-terminated; asyncpg needs ssl outside local Docker."""
+    if os.environ.get("RENDER", "").strip().lower() in ("true", "1", "yes"):
+        return True
+    return None
 
 
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        ssl = _pool_ssl()
+        kwargs: Dict[str, Any] = {"min_size": 2, "max_size": 10}
+        if ssl is not None:
+            kwargs["ssl"] = ssl
+        _pool = await asyncpg.create_pool(DATABASE_URL, **kwargs)
     return _pool
 
 
