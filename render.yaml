@@ -1,0 +1,12 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Create Web Service → connect repo → Render detects this file.
+# Playwright needs Docker + enough RAM (Starter plan or higher recommended).
+services:
+  - type: web
+    name: steam-discussion-scraper
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"

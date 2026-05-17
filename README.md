@@ -92,6 +92,29 @@ The FastAPI Swagger docs are at: **http://localhost:8000/docs**
 
 ---
 
+## Deploy on Render.com
+
+This app uses **Playwright + Chromium**, so deploy as a **Docker** web service (not native Python).
+
+1. Push the repo to GitHub/GitLab/Bitbucket.
+2. In [Render](https://render.com), **New → Web Service** → connect the repo.
+3. Set **Runtime** to **Docker** (Render will use the repo `Dockerfile`).
+4. Use at least the **Starter** plan (512MB free tier is often too small for Chromium).
+5. Health check path: `/api/health` (optional; also set in `render.yaml` if using a Blueprint).
+
+Alternatively, import `render.yaml` as a Blueprint for a one-click setup.
+
+Local production-style test:
+
+```bash
+docker build -t steam-scraper .
+docker run -p 8000:10000 -e PORT=10000 steam-scraper
+```
+
+Open **http://localhost:8000**
+
+---
+
 ## API Endpoints
 
 ### Search
