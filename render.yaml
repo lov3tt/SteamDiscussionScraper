@@ -1,6 +1,7 @@
 # Render Blueprint: https://render.com/docs/blueprint-spec
-# Create Web Service → connect repo → Render detects this file.
-# Playwright needs Docker + enough RAM (Starter plan or higher recommended).
+#
+# Option A (recommended): runtime docker — uses Dockerfile, Playwright + Chromium work.
+# Option B: runtime python — set buildCommand/startCommand below (uncomment env: python block).
 services:
   - type: web
     name: steam-discussion-scraper
@@ -10,3 +11,12 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
+
+  # Option B — native Python (delete the docker service above if you use this)
+  # - type: web
+  #   name: steam-discussion-scraper
+  #   runtime: python
+  #   plan: starter
+  #   buildCommand: bash render-build.sh
+  #   startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+  #   healthCheckPath: /api/health

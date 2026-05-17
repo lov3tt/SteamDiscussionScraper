@@ -102,6 +102,12 @@ This app uses **Playwright + Chromium**, so deploy as a **Docker** web service (
 4. Use at least the **Starter** plan (512MB free tier is often too small for Chromium).
 5. Health check path: `/api/health` (optional; also set in `render.yaml` if using a Blueprint).
 
+**If you use native Python instead of Docker**, set:
+
+- **Build Command:** `bash render-build.sh`  
+  (must include `playwright install chromium` — `pip install` alone causes “Executable doesn't exist”)
+- **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
 Alternatively, import `render.yaml` as a Blueprint for a one-click setup.
 
 Local production-style test:

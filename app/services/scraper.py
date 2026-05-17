@@ -540,8 +540,9 @@ async def run_scrape_pipeline(
         url: str,
         _wait: Optional[str] = None,
         _pause: float = 0,
-        _thread: bool = False,
+        is_thread_page: bool = False,
     ) -> str:
+        del is_thread_page  # HTTP fetch has no JS wait; signature matches fetch_pw
         return await _fetch_html_http(url)
 
     if not PLAYWRIGHT_AVAILABLE:
