@@ -61,8 +61,15 @@ def _format_playwright_error(exc: Exception) -> str:
     return f"{name}: {text}"
 
 
-DISCUSSION_BASE = "https://steamcommunity.com/app/{app_id}/discussions/0/"
-THREAD_LIST_URL = "https://steamcommunity.com/app/{app_id}/discussions/0/?fp={page}"
+DISCUSSION_BASE = "https://steamcommunity.com/app/{app_id}/discussions/"
+# Some games (e.g. PUBG) error on /discussions/0/ but work on /discussions/
+THREAD_LIST_URL_TEMPLATES = (
+    "https://steamcommunity.com/app/{app_id}/discussions/?fp={page}",
+    "https://steamcommunity.com/app/{app_id}/discussions/0/?fp={page}",
+)
+_THREAD_HREF_RE = re.compile(
+    r"/app/(?P<app_id>\d+)/discussions/(?P<forum_id>\d+)/(?P<thread_id>\d+)"
+)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -96,25 +103,82 @@ def _class_str(el: Tag) -> str:
     return " ".join(c) if isinstance(c, list) else str(c)
 
 
+def _extract_app_id_from_url(url: str, fallback: int) -> int:
+    m = re.search(r"/app/(\d+)/", url or "")
+    return int(m.group(1)) if m else fallback
+
+
+def _is_steam_community_error(html: str) -> bool:
+    if not html:
+        return True
+    if "Steam Community :: Error" in html:
+        return True
+    soup = BeautifulSoup(html, "html.parser")
+    title = (soup.title.get_text(strip=True) if soup.title else "") or ""
+    return title.endswith(":: Error") or title == "Steam Community :: Error"
+
+
+def _looks_like_discussion_list(html: str) -> bool:
+    if _is_steam_community_error(html):
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.select("motion.div.forum_topic, div.forum_topic, a.forum_topic_overlay"):
+        return True
+    title = (soup.title.get_text(strip=True) if soup.title else "") or ""
+    return "Discussions" in title
+
+
 def _parse_thread_links(html: str, app_id: int) -> List[Tuple[str, str]]:
+    """Return (title, url) pairs for discussion threads on a list page."""
     soup = BeautifulSoup(html, "html.parser")
     threads: List[Tuple[str, str]] = []
+    seen_urls: set = set()
+
+    def add(title: str, href: str) -> None:
+        if not href:
+            return
+        url = steam_community_url(href)
+        m = _THREAD_HREF_RE.search(url)
+        if not m or int(m.group("app_id")) != app_id:
+            return
+        if url in seen_urls:
+            return
+        seen_urls.add(url)
+        title = (title or "").strip()
+        if not title or title.startswith("http"):
+            # Title lives in div.forum_topic_name inside the row (overlay <a> is often empty)
+            title = url.rstrip("/").rsplit("/", 1)[-1]
+        threads.append((title, url))
+
+    for row in soup.select("div.forum_topic"):
+        overlay = row.select_one("a.forum_topic_overlay")
+        if not overlay:
+            continue
+        name_el = row.select_one("motion.div.forum_topic_name, div.forum_topic_name, .forum_topic_name")
+        title = name_el.get_text(strip=True) if name_el else ""
+        add(title, overlay.get("href", ""))
 
     for a in soup.select("a.forum_topic_name"):
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        if href and str(app_id) in href:
-            threads.append((title, steam_community_url(href)))
+        add(a.get_text(strip=True), a.get("href", ""))
 
     if not threads:
-        pattern = re.compile(rf"steamcommunity\.com/app/{app_id}/discussions/\d+/\d+")
         for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if pattern.search(href):
-                title = a.get_text(strip=True) or href
-                threads.append((title, steam_community_url(href)))
+            href = a.get("href", "")
+            if _THREAD_HREF_RE.search(steam_community_url(href)):
+                add(a.get_text(strip=True), href)
 
     return threads
+
+
+def _discover_hub_discussion_app_id(html: str) -> Optional[int]:
+    """When Steam redirects a DLC/alias app to a hub, find the discussions app id."""
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        m = re.search(r"/app/(\d+)/discussions/?$", href)
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _extract_author_from_row(row: Tag) -> str:
@@ -366,6 +430,65 @@ def _cancelled(job_state: Optional[Dict[str, Any]]) -> bool:
     return bool(ev and ev.is_set())
 
 
+async def _resolve_list_template(
+    app_id: int,
+    fetch_fn: FetchFn,
+    fetch_meta: Dict[str, Any],
+    errors: List[str],
+    _visited: Optional[set] = None,
+) -> Tuple[Optional[str], int]:
+    """
+    Pick a thread-list URL pattern that works for this game.
+    Returns (url_template, effective_app_id) or (None, app_id) if none work.
+    """
+    visited = _visited if _visited is not None else set()
+    if app_id in visited:
+        return None, app_id
+    visited.add(app_id)
+    effective_app_id = app_id
+
+    for template in THREAD_LIST_URL_TEMPLATES:
+        url = template.format(app_id=effective_app_id, page=0)
+        try:
+            html = await fetch_fn(
+                url,
+                ".forum_topic, a.forum_topic_overlay, div.forum_topic_name",
+                2.5,
+                is_thread_page=False,
+            )
+        except Exception as exc:
+            errors.append(f"Could not load discussion list ({url}): {exc}")
+            continue
+
+        effective_app_id = _extract_app_id_from_url(
+            str(fetch_meta.get("final_url", url)), effective_app_id
+        )
+        if _is_steam_community_error(html):
+            logger.info("Steam error page for %s", url)
+            continue
+
+        threads = _parse_thread_links(html, effective_app_id)
+        if threads or _looks_like_discussion_list(html):
+            return template, effective_app_id
+
+    hub_url = f"https://steamcommunity.com/app/{app_id}/"
+    try:
+        html = await fetch_fn(hub_url, None, 1.5, is_thread_page=False)
+        hub_app = _discover_hub_discussion_app_id(html)
+        if hub_app and hub_app != effective_app_id:
+            effective_app_id = hub_app
+            errors.append(
+                f"Discussions for app {app_id} are on the shared hub (app {hub_app}); using that."
+            )
+            return await _resolve_list_template(
+                hub_app, fetch_fn, fetch_meta, errors, visited
+            )
+    except Exception as exc:
+        errors.append(f"Could not load Steam hub for app {app_id}: {exc}")
+
+    return None, effective_app_id
+
+
 async def _run_with_fetch(
     app_id: int,
     game_name: str,
@@ -374,9 +497,31 @@ async def _run_with_fetch(
     fetch_fn: FetchFn,
     errors: List[str],
     job_state: Optional[Dict[str, Any]] = None,
+    fetch_meta: Optional[Dict[str, Any]] = None,
 ) -> ScrapeResult:
     keywords = [str(k).strip() for k in keywords if k is not None and str(k).strip()]
-    discussion_url = DISCUSSION_BASE.format(app_id=app_id)
+    meta: Dict[str, Any] = fetch_meta if fetch_meta is not None else {}
+    list_template, effective_app_id = await _resolve_list_template(
+        app_id, fetch_fn, meta, errors
+    )
+    if not list_template:
+        errors.append(
+            f"No accessible discussion forum found for app {app_id}. "
+            "Try the main game hub from search (not DLC/season packs)."
+        )
+        return ScrapeResult(
+            app_id=app_id,
+            game_name=game_name,
+            discussion_url=DISCUSSION_BASE.format(app_id=app_id),
+            pages_scraped=0,
+            threads_found=0,
+            comments_scanned=0,
+            flagged_comments=[],
+            keyword_frequency={},
+            errors=errors,
+        )
+
+    discussion_url = list_template.format(app_id=effective_app_id, page=0).split("?")[0]
     all_threads: List[Tuple[str, str]] = []
     flagged: List[FlaggedComment] = []
     total_comments = 0
@@ -400,10 +545,21 @@ async def _run_with_fetch(
         if _cancelled(job_state):
             errors.append("Stopped by user during listing.")
             break
-        url = THREAD_LIST_URL.format(app_id=app_id, page=page)
+        url = list_template.format(app_id=effective_app_id, page=page)
         try:
-            html = await fetch_fn(url, ".forum_topic_name", 2.5, is_thread_page=False)
-            threads_on_page = _parse_thread_links(html, app_id)
+            html = await fetch_fn(
+                url,
+                ".forum_topic, a.forum_topic_overlay, div.forum_topic_name",
+                2.5,
+                is_thread_page=False,
+            )
+            effective_app_id = _extract_app_id_from_url(
+                str(meta.get("final_url", url)), effective_app_id
+            )
+            if _is_steam_community_error(html):
+                errors.append(f"Steam returned an error page for list page {page}.")
+                break
+            threads_on_page = _parse_thread_links(html, effective_app_id)
             if not threads_on_page:
                 logger.info("No threads on page %s, stopping pagination.", page)
                 break
@@ -510,7 +666,7 @@ async def _run_with_fetch(
     )
 
     return ScrapeResult(
-        app_id=app_id,
+        app_id=effective_app_id,
         game_name=game_name,
         discussion_url=discussion_url,
         pages_scraped=pages_scraped,
@@ -535,6 +691,7 @@ async def run_scrape_pipeline(
     Optional job_state: { "progress": dict, "cancel": asyncio.Event } for UI progress / stop.
     """
     errors: List[str] = []
+    fetch_meta: Dict[str, Any] = {}
 
     async def fetch_http(
         url: str,
@@ -543,12 +700,21 @@ async def run_scrape_pipeline(
         is_thread_page: bool = False,
     ) -> str:
         del is_thread_page  # HTTP fetch has no JS wait; signature matches fetch_pw
-        return await _fetch_html_http(url)
+        html, final_url = await _fetch_html_http(url)
+        fetch_meta["final_url"] = final_url
+        return html
 
     if not PLAYWRIGHT_AVAILABLE:
         errors.append("Playwright is not installed; using HTTP-only fetching.")
         return await _run_with_fetch(
-            app_id, game_name, keywords, max_pages, fetch_http, errors, job_state
+            app_id,
+            game_name,
+            keywords,
+            max_pages,
+            fetch_http,
+            errors,
+            job_state,
+            fetch_meta,
         )
 
     try:
@@ -576,6 +742,7 @@ async def run_scrape_pipeline(
                     is_thread_page: bool = False,
                 ) -> str:
                     await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    fetch_meta["final_url"] = page.url
                     if is_thread_page:
                         selectors = [
                             ".forum_comment",
@@ -599,7 +766,14 @@ async def run_scrape_pipeline(
                     return await page.content()
 
                 return await _run_with_fetch(
-                    app_id, game_name, keywords, max_pages, fetch_pw, errors, job_state
+                    app_id,
+                    game_name,
+                    keywords,
+                    max_pages,
+                    fetch_pw,
+                    errors,
+                    job_state,
+                    fetch_meta,
                 )
             finally:
                 await browser.close()
@@ -617,10 +791,11 @@ async def run_scrape_pipeline(
             fetch_http,
             list(errors),
             job_state,
+            fetch_meta,
         )
 
 
-async def _fetch_html_http(url: str) -> str:
+async def _fetch_html_http(url: str) -> Tuple[str, str]:
     headers = {
         "User-Agent": USER_AGENT,
         "Accept-Language": "en-US,en;q=0.9",
@@ -628,4 +803,4 @@ async def _fetch_html_http(url: str) -> str:
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        return resp.text
+        return resp.text, str(resp.url)
